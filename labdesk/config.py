@@ -1,13 +1,15 @@
 """Paths and persisted configuration.
 
-Mirrors TubeForge's config module: the dependency report gates which test
-registry entries are runnable.
+Statistical and appearance defaults live here as one visible dict, so an alpha
+that lives in a settings pane is one you cannot silently change per test.
 """
 
 import json
 import os
 import tempfile
 import threading
+import contextvars
+from contextlib import contextmanager
 
 HOME = os.path.expanduser("~")
 CONF_DIR = os.path.join(
@@ -65,6 +67,7 @@ DEFAULT_CONFIG = {
 }
 
 _lock = threading.RLock()
+_execution_overrides = contextvars.ContextVar("labdesk_execution_overrides", default=None)
 
 
 def load_config():
@@ -83,3 +86,50 @@ def save_config(cfg):
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=2)
         os.replace(tmp, CONF_PATH)
+
+
+# Bumped when a default changes in a way a stored config should not silently
+# override. Appearance keys reset on a bump; API keys and statistics survive.
+CONFIG_VERSION = 3
+APPEARANCE_KEYS = ("theme", "typeface", "ui_scale")
+
+
+def _stored_version():
+    """Read the version from the file rather than the merged dict."""
+    try:
+        with open(CONF_PATH, "r", encoding="utf-8") as fh:
+            return json.load(fh).get("config_version")
+    except Exception:
+        return CONFIG_VERSION
+
+
+def _migrate(cfg):
+    if _stored_version() == CONFIG_VERSION:
+        return cfg
+    for k in APPEARANCE_KEYS:
+        cfg[k] = DEFAULT_CONFIG[k]
+    cfg.pop("accent", None)
+    cfg.pop("font_scale", None)
+    cfg["config_version"] = CONFIG_VERSION
+    save_config(cfg)
+    return cfg
+
+
+CONFIG = _migrate(load_config())
+
+
+def get(key, default=None):
+    overrides = _execution_overrides.get()
+    if overrides is not None and key in overrides:
+        return overrides[key]
+    return CONFIG.get(key, DEFAULT_CONFIG.get(key, default))
+
+
+@contextmanager
+def execution_settings(settings):
+    """Freeze settings for one job without mutating process-wide defaults."""
+    token = _execution_overrides.set(dict(settings or {}))
+    try:
+        yield
+    finally:
+        _execution_overrides.reset(token)
