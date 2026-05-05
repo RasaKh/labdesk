@@ -1,9 +1,12 @@
-"""Paths and persisted configuration.
+"""Paths, persisted configuration, and optional-dependency probing.
 
-Statistical and appearance defaults live here as one visible dict, so an alpha
-that lives in a settings pane is one you cannot silently change per test.
+Mirrors TubeForge's config module. The dependency report is the direct
+analogue of `dependency_report()` there: instead of asking whether ffmpeg
+exists, it asks whether statsmodels exists, and the answer gates which
+entries in the test registry are runnable.
 """
 
+import importlib
 import json
 import os
 import tempfile
@@ -88,8 +91,6 @@ def save_config(cfg):
         os.replace(tmp, CONF_PATH)
 
 
-# Bumped when a default changes in a way a stored config should not silently
-# override. Appearance keys reset on a bump; API keys and statistics survive.
 CONFIG_VERSION = 3
 APPEARANCE_KEYS = ("theme", "typeface", "ui_scale")
 
@@ -133,3 +134,86 @@ def execution_settings(settings):
         yield
     finally:
         _execution_overrides.reset(token)
+
+
+SECRET_KEYS = {"ncbi_api_key", "semantic_scholar_key"}
+PUBLIC_KEYS = set(DEFAULT_CONFIG)
+
+
+def public(cfg=None):
+    out = dict(CONFIG if cfg is None else cfg)
+    for key in SECRET_KEYS:
+        if key in out:
+            out[key] = ""
+    return out
+
+
+def update(patch):
+    unknown = set(patch) - PUBLIC_KEYS - {"active_project"}
+    if unknown:
+        raise ValueError("Unknown setting(s): " + ", ".join(sorted(unknown)))
+    with _lock:
+        clean = dict(patch)
+        for key in SECRET_KEYS:
+            if clean.get(key) == "":
+                clean.pop(key)
+        CONFIG.update(clean)
+        save_config(CONFIG)
+    return CONFIG
+
+# Every registry entry declares which optional deps it needs; the UI greys
+# out anything unavailable and gives the exact pip line rather than letting
+# it fail at run time with an ImportError in a job log.
+OPTIONAL_DEPS = {
+    "numpy":        ("numpy", "Arrays and numerics", True),
+    "pandas":       ("pandas", "Data frames and import/export", True),
+    "scipy":        ("scipy", "Core statistical tests", True),
+    "matplotlib":   ("matplotlib", "Figure rendering", True),
+    "pyarrow":      ("pyarrow", "Typed, immutable Parquet dataset versions", True),
+    "statsmodels":  ("statsmodels", "Regression, GLM, GEE, mixed models, multiplicity", False),
+    "pingouin":     ("pingouin", "ANOVA family, effect sizes, ICC, sphericity", False),
+    "lifelines":    ("lifelines", "Kaplan-Meier, Cox, competing risks", False),
+    "sklearn":      ("scikit-learn", "ROC, calibration, penalised regression, clustering", False),
+    "seaborn":      ("seaborn", "Distribution plot styles", False),
+    "requests":     ("requests", "Literature and registry APIs", False),
+    "docx":         ("python-docx", "Word export of tables and methods text", False),
+    "openpyxl":     ("openpyxl", "Excel import/export", False),
+    "pyreadstat":   ("pyreadstat", "SPSS .sav and Stata .dta import", False),
+    "rapidfuzz":    ("rapidfuzz", "Fuzzy title matching for deduplication", False),
+    "umap":         ("umap-learn", "UMAP embedding", False),
+}
+
+_dep_cache = {}
+
+
+def have(mod):
+    if mod not in _dep_cache:
+        try:
+            importlib.import_module(mod)
+            _dep_cache[mod] = True
+        except Exception:
+            _dep_cache[mod] = False
+    return _dep_cache[mod]
+
+
+def dependency_report():
+    out = []
+    for mod, (pipname, why, required) in OPTIONAL_DEPS.items():
+        ok = have(mod)
+        ver = ""
+        if ok:
+            try:
+                import importlib.metadata as im
+                ver = im.version(pipname)
+            except Exception:
+                ver = "?"
+        out.append({
+            "module": mod, "pip": pipname, "why": why,
+            "required": required, "ok": ok, "version": ver,
+            "install": f"pip install {pipname}",
+        })
+    return out
+
+
+def missing_deps(deps):
+    return [d for d in (deps or []) if not have(d)]
