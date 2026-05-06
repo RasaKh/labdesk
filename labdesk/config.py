@@ -1,4 +1,5 @@
-"""Paths, persisted configuration, and optional-dependency probing.
+"""
+Paths, persisted configuration, and optional-dependency probing.
 
 Mirrors TubeForge's config module. The dependency report is the direct
 analogue of `dependency_report()` there: instead of asking whether ffmpeg
@@ -32,41 +33,57 @@ for _d in (CONF_DIR, DATA_DIR, FIG_DIR, EXPORT_DIR, BACKUP_DIR, CACHE_DIR, TMP_D
 
 
 DEFAULT_CONFIG = {
+    # Statistical defaults. These are deliberately global and visible, because
+    # an alpha that lives in a settings pane is one you cannot silently change
+    # per test after seeing the result.
     "alpha": 0.05,
     "ci_level": 0.95,
     "decimals": 3,
     "p_decimals": 4,
-    "p_min_display": 0.001,
-    "exact_p_in_plots": False,
+    "p_min_display": 0.001,          # below this, report as p < .001
+    "exact_p_in_plots": False,       # False = asterisks, True = numeric p
     "star_thresholds": [[0.001, "***"], [0.01, "**"], [0.05, "*"]],
     "ns_label": "ns",
     "multiplicity_default": "holm",
-    "error_bar_default": "ci95",
-    "assumption_policy": "warn",
+    "error_bar_default": "ci95",     # sd | sem | ci95
+    "assumption_policy": "warn",     # warn | block | auto_fallback
     "seed": 20260804,
+
+    # Reporting
     "citation_style": "vancouver",
-    "stats_report_style": "apa",
+    "stats_report_style": "apa",     # apa | vancouver | plain
     "software_footer": True,
+
+    # Figures
     "fig_dpi": 300,
     "fig_format": "png",
-    "fig_width_mm": 89,
+    "fig_width_mm": 89,              # single column; 183 for double
     "palette": "okabe_ito",
     "greyscale_check": True,
+
+    # Harvest
     "ncbi_api_key": "",
     "ncbi_email": "",
     "semantic_scholar_key": "",
     "harvest_cache_hours": 24,
-    "harvest_rate_limit": 3,
+    "harvest_rate_limit": 3,         # requests/sec against NCBI without a key
+
+    # Runtime
     "max_concurrent_jobs": 2,
     "keep_job_history": 500,
     "backup_keep": 5,
+    # daylight matches dr.khosrofar.me and is the default; bench is the dark
+    # theme. typeface: site uses Georgia/Arial as the site does,
+    # instrument drops the serif display face for the denser system sans.
     "theme": "daylight",
     "typeface": "site",
+    # Interface scale as a percentage. Drives --fs on :root, so every rem-based
+    # size moves together. 110 is the default because 100 tested small.
     "ui_scale": 110,
     "config_version": 3,
     "confirm_destructive": True,
-    "provenance_strict": True,
-    "multiplicity_nag_after": 10,
+    "provenance_strict": True,       # refuse to run without hashing the dataset
+    "multiplicity_nag_after": 10,    # tests on one dataset before we say so
 }
 
 _lock = threading.RLock()
@@ -91,17 +108,21 @@ def save_config(cfg):
         os.replace(tmp, CONF_PATH)
 
 
+# Bumped when a default changes in a way a stored config should not silently
+# override. Appearance keys are reset to their new defaults on a bump; nothing
+# else is touched, so API keys and statistical settings survive.
 CONFIG_VERSION = 3
 APPEARANCE_KEYS = ("theme", "typeface", "ui_scale")
 
 
 def _stored_version():
-    """Read the version from the file rather than the merged dict."""
+    """Read the version from the file rather than the merged dict, since the
+    merge already supplies the current default and would mask an old file."""
     try:
         with open(CONF_PATH, "r", encoding="utf-8") as fh:
             return json.load(fh).get("config_version")
     except Exception:
-        return CONFIG_VERSION
+        return CONFIG_VERSION      # no file yet: nothing to migrate
 
 
 def _migrate(cfg):
@@ -161,9 +182,15 @@ def update(patch):
         save_config(CONFIG)
     return CONFIG
 
-# Every registry entry declares which optional deps it needs; the UI greys
-# out anything unavailable and gives the exact pip line rather than letting
-# it fail at run time with an ImportError in a job log.
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Optional dependencies
+#
+#  Every registry entry declares which of these it needs. The UI greys out
+#  anything unavailable and tells you the exact pip line, rather than
+#  failing at run time with an ImportError in a job log.
+# ─────────────────────────────────────────────────────────────────────────
+
 OPTIONAL_DEPS = {
     "numpy":        ("numpy", "Arrays and numerics", True),
     "pandas":       ("pandas", "Data frames and import/export", True),
