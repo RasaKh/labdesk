@@ -1,7 +1,10 @@
-"""SQLite persistence and provenance ledger: schema plus non-destructive migration."""
+"""SQLite persistence and provenance ledger: schema, migration, and query helpers."""
 
+import json
 import sqlite3
 import threading
+import uuid
+from contextlib import contextmanager
 
 from .config import DB_PATH
 
@@ -298,3 +301,55 @@ def init():
     conn.commit()
     from . import migrations
     migrations.run(conn)
+
+
+def json_value(value, default=None):
+    """Decode a JSON database value without making every caller repeat guards."""
+    if value in (None, ""):
+        return default
+    if isinstance(value, (dict, list, int, float, bool)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def exec_(sql, args=()):
+    conn = db()
+    cur = conn.execute(sql, args)
+    if not getattr(_local, "explicit_transaction", False):
+        conn.commit()
+    return cur
+
+
+@contextmanager
+def transaction():
+    """Atomic multi-statement operation on the current thread's connection."""
+    conn = db()
+    if getattr(_local, "explicit_transaction", False):
+        yield conn
+        return
+    _local.explicit_transaction = True
+    try:
+        conn.execute("BEGIN")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _local.explicit_transaction = False
+
+
+def query(sql, args=()):
+    return [dict(r) for r in db().execute(sql, args).fetchall()]
+
+
+def one(sql, args=()):
+    rows = query(sql, args)
+    return rows[0] if rows else None
+
+
+def new_id(prefix=""):
+    return (prefix + uuid.uuid4().hex[:12]) if prefix else uuid.uuid4().hex[:12]
