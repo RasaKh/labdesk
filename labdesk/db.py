@@ -1,4 +1,4 @@
-"""SQLite persistence and provenance ledger: connection handling and schema."""
+"""SQLite persistence and provenance ledger: schema plus non-destructive migration."""
 
 import sqlite3
 import threading
@@ -213,3 +213,88 @@ CREATE TABLE IF NOT EXISTS harvest_query (
   ran_at        REAL
 );
 """
+
+# Columns added after initial releases. CREATE TABLE IF NOT EXISTS does not
+# migrate an existing database, so add them explicitly and non-destructively.
+_ADDED_COLUMNS = {
+    "dataset": [("project_id", "TEXT"), ("dictionary_sha", "TEXT")],
+    "analysis_run": [
+        ("project_id", "TEXT"), ("dictionary_sha", "TEXT"),
+        ("alpha", "REAL"), ("ci_level", "REAL"),
+    ],
+    "figure": [("project_id", "TEXT")],
+    "project": [
+        ("notes", "TEXT"), ("status", "TEXT"),
+        ("stage_notes", "TEXT"), ("updated_at", "REAL"),
+    ],
+}
+
+_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_dataset_project ON dataset(project_id);
+CREATE INDEX IF NOT EXISTS idx_run_project ON analysis_run(project_id);
+CREATE INDEX IF NOT EXISTS idx_figure_project ON figure(project_id);
+DROP INDEX IF EXISTS ux_screen_record_stage_reviewer;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_screen_record_stage_reviewer
+  ON screen(record_id, stage, reviewer);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_resolution_record_stage
+  ON resolution(record_id, stage);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_extraction_record_form
+  ON extraction(record_id, form_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_rob_record_instrument
+  ON rob(record_id, instrument);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_dataset_op_seq
+  ON dataset_op(dataset_id, seq);
+"""
+
+
+def _migrate_columns(conn):
+    for table, cols in _ADDED_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if not have:
+            continue
+        for name, ctype in cols:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ctype}")
+
+
+def _dedupe_natural_keys(conn):
+    """Keep the newest row for each logical key before unique indexes exist."""
+    statements = [
+        "DELETE FROM screen WHERE rowid NOT IN ("
+        "SELECT s.rowid FROM screen s WHERE s.rowid=(SELECT s2.rowid FROM screen s2 "
+        "WHERE s2.record_id=s.record_id AND s2.stage=s.stage "
+        "AND COALESCE(s2.reviewer,'')=COALESCE(s.reviewer,'') "
+        "ORDER BY COALESCE(s2.decided_at,0) DESC, s2.rowid DESC LIMIT 1))",
+        "DELETE FROM resolution WHERE rowid NOT IN ("
+        "SELECT r.rowid FROM resolution r WHERE r.rowid=(SELECT r2.rowid FROM resolution r2 "
+        "WHERE r2.record_id=r.record_id AND r2.stage=r.stage "
+        "ORDER BY COALESCE(r2.resolved_at,0) DESC, r2.rowid DESC LIMIT 1))",
+        "DELETE FROM extraction WHERE rowid NOT IN ("
+        "SELECT e.rowid FROM extraction e WHERE e.rowid=(SELECT e2.rowid FROM extraction e2 "
+        "WHERE e2.record_id=e.record_id AND e2.form_id=e.form_id "
+        "ORDER BY COALESCE(e2.updated_at,0) DESC, e2.rowid DESC LIMIT 1))",
+        "DELETE FROM rob WHERE rowid NOT IN ("
+        "SELECT r.rowid FROM rob r WHERE r.rowid=(SELECT r2.rowid FROM rob r2 "
+        "WHERE r2.record_id=r.record_id AND r2.instrument=r.instrument "
+        "ORDER BY COALESCE(r2.updated_at,0) DESC, r2.rowid DESC LIMIT 1))",
+        "DELETE FROM dataset_op WHERE rowid NOT IN ("
+        "SELECT d.rowid FROM dataset_op d WHERE d.rowid=(SELECT d2.rowid FROM dataset_op d2 "
+        "WHERE d2.dataset_id=d.dataset_id AND d2.seq=d.seq "
+        "ORDER BY COALESCE(d2.created_at,0) DESC, d2.rowid DESC LIMIT 1))",
+    ]
+    for sql in statements:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+
+
+def init():
+    conn = db()
+    conn.executescript(SCHEMA)
+    _migrate_columns(conn)
+    _dedupe_natural_keys(conn)
+    conn.executescript(_INDEXES)
+    conn.commit()
+    from . import migrations
+    migrations.run(conn)
