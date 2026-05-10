@@ -1,8 +1,9 @@
-"""SQLite persistence and provenance ledger: schema, migration, and query helpers."""
+"""SQLite persistence and provenance ledger."""
 
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 
@@ -353,3 +354,51 @@ def one(sql, args=()):
 
 def new_id(prefix=""):
     return (prefix + uuid.uuid4().hex[:12]) if prefix else uuid.uuid4().hex[:12]
+
+
+def insert(table, row):
+    """Insert only. Updates/upserts are explicit so provenance rows are not replaced."""
+    row = dict(row)
+    row.setdefault("id", new_id())
+    cols = ",".join(row)
+    marks = ",".join("?" for _ in row)
+    vals = [json.dumps(v) if isinstance(v, (dict, list)) else v for v in row.values()]
+    exec_(f"INSERT INTO {table} ({cols}) VALUES ({marks})", vals)
+    return row["id"]
+
+
+def upsert(table, row, conflict_cols):
+    """Explicit UPSERT for ordinary (non-expression) UNIQUE constraints."""
+    row = dict(row)
+    row.setdefault("id", new_id())
+    cols = list(row)
+    vals = [json.dumps(row[c]) if isinstance(row[c], (dict, list)) else row[c] for c in cols]
+    updates = [c for c in cols if c not in set(conflict_cols) | {"id"}]
+    action = ("DO UPDATE SET " + ",".join(f"{c}=excluded.{c}" for c in updates)
+              if updates else "DO NOTHING")
+    exec_(
+        f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)}) "
+        f"ON CONFLICT({','.join(conflict_cols)}) {action}", vals,
+    )
+    where = " AND ".join(f"{c} IS ?" for c in conflict_cols)
+    found = one(f"SELECT id FROM {table} WHERE {where}", tuple(row[c] for c in conflict_cols))
+    return found["id"] if found else row["id"]
+
+
+def log_run(**kw):
+    kw.setdefault("id", new_id())
+    kw.setdefault("created_at", time.time())
+    for k in ("spec", "assumptions", "result", "versions"):
+        if isinstance(kw.get(k), (dict, list)):
+            kw[k] = json.dumps(kw[k], default=str)
+    insert("analysis_run", kw)
+    return kw["id"]
+
+
+def runs_on_dataset(sha, project_id=None):
+    """Number of successful analyses on this exact dataset in this project."""
+    r = one(
+        "SELECT COUNT(*) c FROM analysis_run WHERE dataset_sha=? "
+        "AND project_id IS ? AND status='ok'", (sha, project_id),
+    )
+    return r["c"] if r else 0
