@@ -1,15 +1,17 @@
 """
 Declarative primitives.
-
-The client sends a spec, never a command, and the option surface exists in
-exactly one place. This is the TubeForge contract carried over intact.
 """
 
 
 def P(pid, label, ptype="text", default=None, choices=None, min=None, max=None,
       step=None, unit=None, help=None, adv=False, depends=None, placeholder=None,
       group=None):
-    """One control."""
+    """One control.
+
+    ptype: text | number | int | bool | select | multiselect | column |
+           columns | textarea | range | color | file
+    depends: {"param": "welch", "equals": True} hides the control until met.
+    """
     d = {"id": pid, "label": label, "type": ptype, "adv": bool(adv)}
     if default is not None:
         d["default"] = default
@@ -25,7 +27,11 @@ def P(pid, label, ptype="text", default=None, choices=None, min=None, max=None,
 
 def R(rid, label, kind="continuous", min_vars=1, max_vars=1, levels=None,
       help=None, optional=False):
-    """One variable role slot."""
+    """One variable role slot.
+
+    kind: continuous | categorical | binary | ordinal | time | event | id | any
+    levels: exact number of factor levels required, or [min, max]
+    """
     d = {"id": rid, "label": label, "kind": kind,
          "min": min_vars, "max": max_vars, "optional": bool(optional)}
     if levels is not None:
