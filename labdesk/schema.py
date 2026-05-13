@@ -1,5 +1,11 @@
 """
 Declarative primitives.
+
+Everything the UI can do is described by data in this shape, and the browser
+builds its own controls from it. The server compiles a submitted spec against
+the same definitions. This is the TubeForge contract carried over intact: the
+client sends a spec, never a command, and the option surface exists in exactly
+one place.
 """
 
 
