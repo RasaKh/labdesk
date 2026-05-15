@@ -1,3 +1,18 @@
+"""
+TEST_REGISTRY.
+
+Pure data. The statistics pane, the variable pickers, the assumption strip,
+the effect-size menu and the suggested plots are all generated from these
+entries. Adding a test means adding one dict here plus one function in
+stats_run.RUNNERS.
+
+status:
+  ready   runner implemented and exercised
+  stub    declared, wired into the UI, runner raises NotImplemented with the
+          exact signature to fill in. This is deliberate: the shape of the
+          tool is complete even where the arithmetic is not.
+"""
+
 from .schema import P, R, group_registry, index
 
 READY, STUB = "ready", "stub"
@@ -29,9 +44,7 @@ CORRECTION = P("correction", "Multiplicity correction", "select", default="holm"
 BOOT = P("bootstrap", "Bootstrap resamples for the CI", "int", default=0, min=0, max=100000,
          adv=True, help="0 uses the analytic interval. 2000 is a reasonable floor when used.")
 
-
 TESTS = [
-
     # ── Descriptives ─────────────────────────────────────────────────────
     T("describe", "Descriptive summary", "Descriptives", status=READY,
       blurb="n, missing, central tendency, spread and shape for every selected variable.",
@@ -71,7 +84,6 @@ TESTS = [
                 choices=[("none", "None"), ("row", "By row"), ("col", "By column"), ("total", "Of total")]),
               P("residuals", "Show standardised residuals", "bool", default=False)],
       plots=["mosaic", "stacked_bar"]),
-
     # ── Assumption checks ────────────────────────────────────────────────
     T("normality_check", "Normality", "Assumption checks", status=READY,
       blurb="Shapiro-Wilk, skewness and kurtosis, with a Q-Q plot. Read the plot, "
@@ -192,6 +204,262 @@ TESTS = [
       blurb="Rank test that, unlike Mann-Whitney, does not assume equal shapes.",
       roles=[R("dv", "Outcome", "continuous"), R("group", "Group", "categorical", levels=2)],
       params=[ALT], effects=["cles"], plots=["box", "raincloud"]),
+    # ── Three or more groups ─────────────────────────────────────────────
+    T("anova_oneway", "One-way ANOVA", "Three or more groups", status=READY,
+      blurb="Compares means across three or more independent groups.",
+      roles=[R("dv", "Outcome", "continuous"), R("group", "Factor", "categorical", levels=[3, 1000000])],
+      params=[P("welch", "Welch correction", "bool", default=False,
+                help="Switch on when Levene fails; it is the recommended default in "
+                     "unbalanced designs."),
+              P("posthoc", "Post-hoc test", "select", default="tukey",
+                choices=[("none", "None"), ("tukey", "Tukey HSD"), ("games_howell", "Games-Howell"),
+                         ("bonferroni", "Pairwise t with Bonferroni"), ("holm", "Pairwise t with Holm"),
+                         ("dunnett", "Dunnett vs control")]),
+              P("control", "Control level (Dunnett)", "text",
+                depends={"param": "posthoc", "equals": "dunnett"})],
+      assumptions=["three_plus_levels", "group_sizes", "normality_by_group",
+                   "homogeneity", "independence"],
+      effects=["eta_squared", "partial_eta_squared", "omega_squared"],
+      plots=["bar_sig", "box", "raincloud", "means_ci"],
+      fallback="kruskal"),
+
+    T("anova_factorial", "Factorial ANOVA", "Three or more groups", status=READY,
+      blurb="Two or more crossed factors with interaction terms.",
+      roles=[R("dv", "Outcome", "continuous"), R("factors", "Factors", "categorical", 2, 4)],
+      params=[P("interactions", "Include interactions", "bool", default=True),
+              P("ss_type", "Sum of squares", "select", default="2",
+                choices=[("1", "Type I"), ("2", "Type II"), ("3", "Type III")],
+                help="Type II is the sensible default for unbalanced designs without "
+                     "a significant interaction; Type III when the interaction matters."),
+              P("posthoc", "Post-hoc test", "select", default="tukey",
+                choices=["none", "tukey", "holm", "bonferroni"])],
+      assumptions=["group_sizes", "normality_by_group", "homogeneity", "independence"],
+      effects=["partial_eta_squared", "omega_squared"],
+      plots=["interaction", "bar_sig", "means_ci"], deps=["scipy", "statsmodels"]),
+
+    T("ancova", "ANCOVA", "Three or more groups", status=READY,
+      blurb="Group comparison adjusted for one or more continuous covariates.",
+      roles=[R("dv", "Outcome", "continuous"), R("group", "Factor", "categorical"),
+             R("covariates", "Covariates", "continuous", 1, 6)],
+      params=[P("homog_slopes", "Test homogeneity of regression slopes", "bool", default=True),
+              P("emmeans", "Report estimated marginal means", "bool", default=True,
+                help="Group means predicted at the covariates' overall means."),
+              CI],
+      assumptions=["normality_by_group", "homogeneity", "linearity", "independence"],
+      effects=["partial_eta_squared"], plots=["means_ci"],
+      deps=["scipy", "statsmodels"]),
+
+    T("anova_rm", "Repeated-measures ANOVA", "Three or more groups", status=READY,
+      blurb="Within-subject factor across three or more time points or conditions. "
+            "Subjects missing any condition are excluded.",
+      roles=[R("dv", "Outcome", "continuous"), R("subject", "Subject id", "id"),
+             R("within", "Within-subject factor", "categorical")],
+      params=[P("correction", "Sphericity correction", "select", default="auto",
+                choices=[("none", "None"), ("gg", "Greenhouse-Geisser"),
+                         ("hf", "Huynh-Feldt"), ("auto", "Automatic (GG if Mauchly fails)")]),
+              P("posthoc", "Post-hoc", "select", default="holm",
+                choices=["none", "holm", "bonferroni"])],
+      assumptions=["sphericity"],
+      effects=["partial_eta_squared", "generalized_eta_squared"],
+      plots=["means_ci", "bar_sig"], deps=["scipy", "pingouin"],
+      fallback="friedman"),
+
+    T("anova_mixed", "Mixed ANOVA", "Three or more groups",
+      blurb="One between-subject factor and one within-subject factor.",
+      roles=[R("dv", "Outcome", "continuous"), R("subject", "Subject id", "id"),
+             R("within", "Within factor", "categorical"), R("between", "Between factor", "categorical")],
+      params=[P("correction", "Sphericity correction", "select", default="auto",
+                choices=["none", "gg", "hf", "auto"])],
+      assumptions=["sphericity", "normality_by_group", "homogeneity"],
+      effects=["partial_eta_squared"], plots=["interaction", "spaghetti"],
+      deps=["scipy", "pingouin"]),
+
+    T("manova", "MANOVA", "Three or more groups",
+      blurb="Several correlated outcomes tested jointly.",
+      roles=[R("dvs", "Outcomes", "continuous", 2, 10), R("group", "Factor", "categorical")],
+      params=[P("statistic", "Test statistic", "select", default="pillai",
+                choices=[("pillai", "Pillai's trace"), ("wilks", "Wilks' lambda"),
+                         ("hotelling", "Hotelling-Lawley"), ("roy", "Roy's largest root")])],
+      effects=["partial_eta_squared"], deps=["scipy", "statsmodels"]),
+
+    T("kruskal", "Kruskal-Wallis", "Three or more groups", status=READY,
+      blurb="Rank-based omnibus test across three or more independent groups.",
+      roles=[R("dv", "Outcome", "continuous"), R("group", "Factor", "categorical", levels=[3, 1000000])],
+      params=[P("posthoc", "Post-hoc", "select", default="dunn",
+                choices=[("none", "None"), ("dunn", "Dunn")]),
+              CORRECTION],
+      assumptions=["three_plus_levels", "group_sizes", "independence"],
+      effects=["epsilon_squared", "eta_squared_h"],
+      plots=["box", "raincloud", "bar_sig"]),
+
+    T("friedman", "Friedman test", "Three or more groups", status=READY,
+      blurb="Rank-based repeated measures across three or more conditions.",
+      roles=[R("dv", "Outcome", "continuous"), R("subject", "Subject id", "id"),
+             R("within", "Condition", "categorical", levels=[3, 1000000])],
+      params=[P("posthoc", "Post-hoc", "select", default="wilcoxon_holm",
+                choices=[("none", "None"),
+                         ("wilcoxon_holm", "Pairwise Wilcoxon with Holm correction")])],
+      effects=["kendalls_w"], plots=["spaghetti", "box"]),
+
+    T("art_anova", "Aligned rank transform ANOVA", "Three or more groups",
+      blurb="Nonparametric factorial designs including interactions, which "
+            "rank tests otherwise cannot handle.",
+      roles=[R("dv", "Outcome", "continuous"), R("factors", "Factors", "categorical", 1, 3)],
+      params=[], deps=["scipy", "statsmodels"], plots=["interaction"]),
+
+    T("welch_anova", "Welch's ANOVA", "Three or more groups", status=READY,
+      blurb="Omnibus comparison that does not assume equal variances.",
+      roles=[R("dv", "Outcome", "continuous"), R("group", "Factor", "categorical", levels=[3, 1000000])],
+      params=[P("posthoc", "Post-hoc", "select", default="games_howell",
+                choices=["none", "games_howell", "holm"])],
+      effects=["omega_squared"], plots=["bar_sig", "box"]),
+
+    # ── Post hoc and multiplicity ────────────────────────────────────────
+    T("pairwise", "Pairwise comparisons", "Post hoc and multiplicity", status=READY,
+      blurb="All pairs, or all against a control, with a chosen correction.",
+      roles=[R("dv", "Outcome", "continuous"), R("group", "Factor", "categorical")],
+      params=[P("test", "Test", "select", default="t",
+                choices=[("t", "t-test"), ("welch", "Welch t"), ("mwu", "Mann-Whitney"),
+                         ("tukey", "Tukey HSD"), ("games_howell", "Games-Howell"),
+                         ("dunn", "Dunn")]),
+              CORRECTION,
+              P("against", "Compare", "select", default="all",
+                choices=[("all", "All pairs"), ("control", "All against a control")]),
+              P("control", "Control level", "text", depends={"param": "against", "equals": "control"})],
+      effects=["hedges_g", "mean_diff_ci"], plots=["bar_sig"]),
+
+    T("padjust", "Adjust a set of p values", "Post hoc and multiplicity", status=READY,
+      blurb="Paste or select a column of p values and apply a correction. "
+            "Useful for adjusting across outcomes rather than within one test.",
+      roles=[R("pvals", "p value column", "continuous", 0, 1, optional=True)],
+      params=[P("paste", "Or paste p values", "textarea",
+                placeholder="0.001, 0.04, 0.22, 0.51"),
+              CORRECTION,
+              P("alpha", "Alpha", "number", default=0.05)],
+      plots=["pvalue_hist"]),
+
+    T("multiplicity_audit", "Multiplicity audit", "Post hoc and multiplicity", status=READY,
+      blurb="Every test run against the current dataset, with the family-wise error "
+            "rate that implies. The provenance ledger makes this possible; it is the "
+            "honest counterpart to how cheap running one more test has become.",
+      roles=[], params=[P("alpha", "Nominal alpha", "number", default=0.05)]),
+    # ── Categorical and proportions ──────────────────────────────────────
+    T("chi2", "Chi-square test", "Categorical and proportions", status=READY,
+      blurb="Association between two categorical variables.",
+      roles=[R("row", "Variable 1", "categorical"), R("col", "Variable 2", "categorical")],
+      params=[P("yates", "Yates continuity correction (2x2)", "bool", default=True),
+              P("residuals", "Report standardised residuals", "bool", default=True)],
+      assumptions=["expected_counts", "independence"],
+      effects=["cramers_v", "phi", "odds_ratio", "risk_ratio"],
+      plots=["stacked_bar", "mosaic"], fallback="fisher"),
+
+    T("fisher", "Fisher's exact test", "Categorical and proportions", status=READY,
+      blurb="Exact test for sparse tables. Extends beyond 2x2 with the "
+            "Freeman-Halton computation.",
+      roles=[R("row", "Variable 1", "categorical"), R("col", "Variable 2", "categorical")],
+      params=[ALT], effects=["odds_ratio", "risk_ratio", "risk_difference"],
+      plots=["stacked_bar"]),
+
+    T("mcnemar", "McNemar's test", "Categorical and proportions", status=READY,
+      blurb="Paired binary outcomes, for example before and after in the same patients.",
+      roles=[R("a", "Before", "binary"), R("b", "After", "binary")],
+      params=[P("exact", "Exact binomial", "bool", default=True)],
+      effects=["odds_ratio_paired"], plots=[]),
+
+    T("cochran_q", "Cochran's Q", "Categorical and proportions", status=READY,
+      blurb="Binary outcome across three or more matched conditions.",
+      roles=[R("vars", "Conditions", "binary", 3, 12)],
+      params=[P("posthoc", "Post-hoc McNemar", "bool", default=True), CORRECTION]),
+
+    T("armitage", "Cochran-Armitage trend test", "Categorical and proportions", status=READY,
+      blurb="Tests for a dose-response trend in proportions across ordered categories.",
+      roles=[R("outcome", "Binary outcome", "binary"), R("ordered", "Ordered exposure", "ordinal")],
+      params=[ALT], plots=[]),
+
+    T("prop_test", "Proportions and their contrast", "Categorical and proportions", status=READY,
+      blurb="Risk ratio, odds ratio, risk difference and number needed to treat, "
+            "with confidence intervals.",
+      roles=[R("outcome", "Outcome", "binary"), R("group", "Group", "categorical", levels=2)],
+      params=[CI, P("measures", "Report", "multiselect",
+                    default=["rr", "or", "rd", "nnt"],
+                    choices=[("rr", "Risk ratio"), ("or", "Odds ratio"),
+                             ("rd", "Risk difference"), ("nnt", "Number needed to treat")]),
+              P("ci_method", "Interval method", "select", default="wilson",
+                choices=[("wilson", "Wilson"), ("wald", "Wald"), ("agresti", "Agresti-Coull"),
+                         ("exact", "Clopper-Pearson exact")], adv=True)],
+      plots=["forest_effect", "stacked_bar"]),
+
+    T("binomial", "One-sample proportion", "Categorical and proportions", status=READY,
+      roles=[R("outcome", "Binary variable", "binary")],
+      params=[P("p0", "Reference proportion", "number", default=0.5, min=0, max=1), ALT, CI]),
+
+    T("goodness_fit", "Goodness of fit", "Categorical and proportions", status=READY,
+      blurb="Observed counts against expected proportions.",
+      roles=[R("var", "Variable", "categorical")],
+      params=[P("expected", "Expected proportions", "text",
+                placeholder="Blank for equal, or 0.25,0.25,0.5")]),
+
+    # ── Correlation and agreement ────────────────────────────────────────
+    T("correlation", "Correlation", "Correlation and agreement", status=READY,
+      blurb="Pearson, Spearman or Kendall, pairwise or as a matrix.",
+      roles=[R("vars", "Variables", "continuous", 2, 40)],
+      params=[P("method", "Coefficient", "select", default="pearson",
+                choices=[("pearson", "Pearson"), ("spearman", "Spearman"),
+                         ("kendall", "Kendall tau-b")]),
+              CI, CORRECTION,
+              P("partial", "Control for", "columns", adv=True,
+                help="Produces partial correlations holding these constant.")],
+      assumptions=["linearity", "independence"],
+      effects=["r", "r_squared", "fisher_z_ci"],
+      plots=["scatter_fit", "corr_matrix", "pair_grid"]),
+
+    T("icc", "Intraclass correlation", "Correlation and agreement", status=READY,
+      blurb="All six forms. The form matters: reporting ICC without specifying "
+            "which one is the most common reliability reporting error.",
+      roles=[R("subject", "Subject id", "id"), R("rater", "Rater or method", "categorical"),
+             R("value", "Measurement", "continuous")],
+      params=[P("form", "Form", "select", default="ICC2k",
+                choices=[("ICC1", "ICC(1): one-way random, single"),
+                         ("ICC2", "ICC(2,1): two-way random, single, absolute"),
+                         ("ICC3", "ICC(3,1): two-way mixed, single, consistency"),
+                         ("ICC1k", "ICC(1,k): one-way random, average"),
+                         ("ICC2k", "ICC(2,k): two-way random, average, absolute"),
+                         ("ICC3k", "ICC(3,k): two-way mixed, average, consistency")]),
+              CI],
+      plots=["bland_altman", "scatter_fit"], deps=["scipy", "pingouin"]),
+
+    T("bland_altman", "Bland-Altman agreement", "Correlation and agreement", status=READY,
+      blurb="Bias and limits of agreement between two methods. The right analysis "
+            "when the question is agreement rather than association.",
+      roles=[R("a", "Method 1", "continuous"), R("b", "Method 2", "continuous")],
+      params=[P("loa", "Limits of agreement", "number", default=1.96, adv=True),
+              P("proportional", "Test for proportional bias", "bool", default=True),
+              CI],
+      plots=["bland_altman"]),
+
+    T("kappa", "Kappa agreement", "Correlation and agreement", status=READY,
+      blurb="Cohen's kappa for two raters, Fleiss for more, weighted for ordinal scales. "
+            "Also used for the screening reliability check in evidence synthesis.",
+      roles=[R("raters", "Rater columns", "any", 2, 20)],
+      params=[P("weights", "Weighting", "select", default="none",
+                choices=[("none", "Unweighted"), ("linear", "Linear"), ("quadratic", "Quadratic")]),
+              CI],
+      plots=[]),
+
+    T("cronbach", "Internal consistency", "Correlation and agreement", status=READY,
+      blurb="Cronbach's alpha with item-total statistics and alpha-if-item-dropped.",
+      roles=[R("items", "Items", "continuous", 3, 100)],
+      params=[P("drop_stats", "Alpha if item dropped", "bool", default=True), CI]),
+
+    T("passing_bablok", "Passing-Bablok regression", "Correlation and agreement",
+      blurb="Method-comparison regression robust to error in both variables.",
+      roles=[R("a", "Reference method", "continuous"), R("b", "Test method", "continuous")],
+      params=[CI], plots=["method_compare"]),
+
+    T("deming", "Deming regression", "Correlation and agreement",
+      roles=[R("a", "Reference method", "continuous"), R("b", "Test method", "continuous")],
+      params=[P("lambda", "Error variance ratio", "number", default=1.0), CI],
+      plots=["method_compare"]),
 ]
 
 
