@@ -44,7 +44,9 @@ CORRECTION = P("correction", "Multiplicity correction", "select", default="holm"
 BOOT = P("bootstrap", "Bootstrap resamples for the CI", "int", default=0, min=0, max=100000,
          adv=True, help="0 uses the analytic interval. 2000 is a reasonable floor when used.")
 
+
 TESTS = [
+
     # ── Descriptives ─────────────────────────────────────────────────────
     T("describe", "Descriptive summary", "Descriptives", status=READY,
       blurb="n, missing, central tendency, spread and shape for every selected variable.",
@@ -84,6 +86,7 @@ TESTS = [
                 choices=[("none", "None"), ("row", "By row"), ("col", "By column"), ("total", "Of total")]),
               P("residuals", "Show standardised residuals", "bool", default=False)],
       plots=["mosaic", "stacked_bar"]),
+
     # ── Assumption checks ────────────────────────────────────────────────
     T("normality_check", "Normality", "Assumption checks", status=READY,
       blurb="Shapiro-Wilk, skewness and kurtosis, with a Q-Q plot. Read the plot, "
@@ -204,6 +207,7 @@ TESTS = [
       blurb="Rank test that, unlike Mann-Whitney, does not assume equal shapes.",
       roles=[R("dv", "Outcome", "continuous"), R("group", "Group", "categorical", levels=2)],
       params=[ALT], effects=["cles"], plots=["box", "raincloud"]),
+
     # ── Three or more groups ─────────────────────────────────────────────
     T("anova_oneway", "One-way ANOVA", "Three or more groups", status=READY,
       blurb="Compares means across three or more independent groups.",
@@ -343,6 +347,7 @@ TESTS = [
             "rate that implies. The provenance ledger makes this possible; it is the "
             "honest counterpart to how cheap running one more test has become.",
       roles=[], params=[P("alpha", "Nominal alpha", "number", default=0.05)]),
+
     # ── Categorical and proportions ──────────────────────────────────────
     T("chi2", "Chi-square test", "Categorical and proportions", status=READY,
       blurb="Association between two categorical variables.",
@@ -460,6 +465,7 @@ TESTS = [
       roles=[R("a", "Reference method", "continuous"), R("b", "Test method", "continuous")],
       params=[P("lambda", "Error variance ratio", "number", default=1.0), CI],
       plots=["method_compare"]),
+
     # ── Regression ───────────────────────────────────────────────────────
     T("linreg", "Linear regression", "Regression", status=READY,
       blurb="Ordinary least squares with full diagnostics.",
@@ -599,6 +605,7 @@ TESTS = [
       params=[P("dist", "Distribution", "select", default="weibull",
                 choices=["exponential", "weibull", "lognormal", "loglogistic"]), CI],
       deps=["lifelines"], plots=["km_curve", "coef_forest"]),
+
     # ── Diagnostic accuracy and prediction ───────────────────────────────
     T("roc", "ROC analysis", "Diagnostic accuracy and prediction", status=READY,
       blurb="AUC with a DeLong interval, the full operating-point table, and "
@@ -762,6 +769,7 @@ TESTS = [
                 choices=[("freeman_tukey", "Freeman-Tukey double arcsine"),
                          ("logit", "Logit"), ("none", "Raw")]), CI],
       plots=["forest", "funnel"]),
+
     # ── Epidemiology and causal ──────────────────────────────────────────
     T("propensity", "Propensity score", "Epidemiology and causal", status=STUB,
       blurb="Matching, IPTW or overlap weights, with a love plot of covariate "
@@ -921,6 +929,7 @@ TESTS = [
                         P("design", "Design", "select", default="mixed",
                           choices=["mixed", "cluster", "stepped_wedge", "custom"])],
       plots=["power_curve"]),
+
     # ── Bench and omics ──────────────────────────────────────────────────
     T("qpcr", "qPCR relative quantification", "Bench and omics", status=READY,
       blurb="ΔΔCt with efficiency correction (Pfaffl), reference-gene stability "
