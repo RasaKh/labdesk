@@ -15,7 +15,11 @@ import math
 import numpy as np
 import pandas as pd
 
+from . import assumptions as A
+from . import datasets, db
 from .config import get
+from .schema import validate_spec
+from .stats_registry import REGISTRY
 
 def fmt_p(p, style=None):
     if p is None or (isinstance(p, float) and math.isnan(p)):
@@ -190,3 +194,171 @@ def adjust_p(pvals, method="holm"):
     back[order] = adj
     out[ok] = back
     return out.tolist()
+def resolve(spec):
+    ds_id = spec.get("dataset")
+    df = datasets.load(ds_id) if ds_id else None
+    roles = {}
+    for k, v in (spec.get("roles") or {}).items():
+        roles[k] = [v] if isinstance(v, str) else list(v or [])
+    return df, roles
+
+
+def _dataset_context(spec):
+    """Resolve data and canonical project ownership for an analysis spec."""
+    ds_id = spec.get("dataset")
+    m = datasets.meta(ds_id) if ds_id else None
+    if ds_id and not m:
+        raise KeyError(f"No dataset {ds_id!r}.")
+    df, roles = resolve(spec)
+    requested_project = spec.get("project")
+    project_id = m.get("project_id") if m else requested_project
+    if m and requested_project is not None and requested_project != project_id:
+        raise ValueError(
+            f"Dataset {ds_id} belongs to project {project_id!r}, not {requested_project!r}. "
+            "Switch projects or move the dataset before running the analysis."
+        )
+    return df, roles, m, project_id
+
+
+def _ctx(df, entry, roles, params):
+    """Flatten roles into the shape the assumption checkers expect."""
+    ctx = {"df": df, "params": params, "predictors": roles.get("predictors", [])}
+    for r in entry.get("roles", []):
+        got = roles.get(r["id"], [])
+        ctx[r["id"]] = got[0] if (r["max"] == 1 and got) else got
+    if "row" in ctx and "col" in ctx and df is not None:
+        try:
+            ctx["table"] = pd.crosstab(df[ctx["row"]], df[ctx["col"]]).values
+        except Exception:
+            pass
+    return ctx
+
+
+def preflight(spec):
+    entry = REGISTRY.get(spec.get("test"))
+    if not entry:
+        return {"ok": False, "errors": [f"Unknown test {spec.get('test')!r}."]}
+    try:
+        df, roles, m, project_id = _dataset_context(spec)
+    except Exception as exc:
+        return {"ok": False, "errors": [str(exc)], "checks": [],
+                "status": entry["status"]}
+    errors, params = validate_spec(entry, spec, df=df,
+                                   dictionary=(m or {}).get("dictionary"))
+    from .config import missing_deps
+    miss = missing_deps(entry.get("deps"))
+    if miss:
+        errors.append("Needs " + ", ".join(miss) + ". Install it from the Settings pane.")
+    checks = []
+    if df is not None and not errors:
+        checks = A.run_checks(entry.get("assumptions"), _ctx(df, entry, roles, params))
+    allowed, action, msg = A.gate(checks) if checks else (True, "run", None)
+    n_prior = 0
+    if m:
+        n_prior = db.runs_on_dataset(m["sha256"], project_id)
+    return {
+        "ok": not errors and allowed,
+        "errors": errors,
+        "checks": checks,
+        "verdict": A.verdict(checks) if checks else "pass",
+        "action": action,
+        "message": msg,
+        "status": entry["status"],
+        "prior_runs": n_prior,
+        "multiplicity_nag": n_prior >= get("multiplicity_nag_after", 10),
+        "code": emit_code(entry, spec, params),
+        "params": params,
+        "project_id": project_id,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Code emission. Reviewer-facing snippets for the resolved analysis. The
+#  immutable run JSON/specification is the canonical reproduction record; a
+#  snippet may still need the corresponding data-preparation variables.
+# ─────────────────────────────────────────────────────────────────────────
+
+CODE_PY = {
+    "ttest_ind": "res = stats.ttest_ind(a, b, equal_var={welch_not})",
+    "ttest_paired": "res = stats.ttest_rel(a, b)",
+    "ttest_1samp": "res = stats.ttest_1samp(x, popmean={mu})",
+    "mannwhitney": "res = stats.mannwhitneyu(a, b, alternative='{alternative}')",
+    "wilcoxon": "res = stats.wilcoxon(a, b)",
+    "anova_oneway": "res = stats.f_oneway(*groups)",
+    "welch_anova": "res = pg.welch_anova(data=df, dv='{dv}', between='{group}')",
+    "kruskal": "res = stats.kruskal(*groups)",
+    "friedman": "res = stats.friedmanchisquare(*conditions)",
+    "chi2": "chi2, p, dof, expected = stats.chi2_contingency(table, correction={yates})",
+    "fisher": "odds, p = stats.fisher_exact(table, alternative='{alternative}')",
+    "correlation": "r, p = stats.{method}r(x, y)",
+    "linreg": "model = sm.OLS(y, sm.add_constant(X)).fit()",
+    "logreg": "model = sm.Logit(y, sm.add_constant(X)).fit()",
+    "roc": "fpr, tpr, thr = roc_curve(truth, score); auc = roc_auc_score(truth, score)",
+    "kaplan_meier": "kmf = KaplanMeierFitter().fit(time, event)",
+    "poisson_reg": "import statsmodels.api as sm\nimport statsmodels.formula.api as smf\n"
+                   "model = smf.glm('{dv} ~ {predictors_plus}', data=df,\n"
+                   "                family=sm.families.Poisson()).fit()  # exp(model.params) = IRR",
+    "anova_rm": "import pingouin as pg\n"
+                "res = pg.rm_anova(df, dv='{dv}', within='{within}', subject='{subject}',\n"
+                "                  correction=True, detailed=True)",
+    "cox": "from lifelines import CoxPHFitter\n"
+           "cph = CoxPHFitter().fit(df, duration_col='{time}', event_col='{event}',\n"
+           "                        formula='{predictors_plus}')",
+    "ancova": "import statsmodels.api as sm\nimport statsmodels.formula.api as smf\n"
+              "model = smf.ols('{dv} ~ C({group}) + {covariates_plus}', data=df).fit()\n"
+              "sm.stats.anova_lm(model, typ=2)",
+}
+
+CODE_R = {
+    "ttest_ind": 't.test({dv} ~ {group}, data = d, var.equal = {r_var_equal})',
+    "ttest_paired": 't.test(d${a}, d${b}, paired = TRUE)',
+    "mannwhitney": 'wilcox.test({dv} ~ {group}, data = d)',
+    "anova_oneway": 'summary(aov({dv} ~ {group}, data = d))',
+    "kruskal": 'kruskal.test({dv} ~ {group}, data = d)',
+    "chi2": 'chisq.test(table(d${row}, d${col}))',
+    "fisher": 'fisher.test(table(d${row}, d${col}))',
+    "correlation": 'cor.test(d${x}, d${y}, method = "{method}")',
+    "linreg": 'summary(lm({dv} ~ ., data = d))',
+    "logreg": 'summary(glm({dv} ~ ., data = d, family = binomial))',
+    "meta_effect": 'metafor::rma(yi = effect, sei = se, method = "{tau_method}")',
+    "kaplan_meier": 'survfit(Surv({time}, {event}) ~ {group}, data = d)',
+    "poisson_reg": 'summary(glm({dv} ~ {predictors_plus}, data = d, family = poisson))  # exp(coef) = IRR',
+    "anova_rm": 'summary(aov({dv} ~ {within} + Error({subject}/{within}), data = d))',
+    "cox": 'coxph(Surv({time}, {event}) ~ {predictors_plus}, data = d, ties = "efron")',
+    "ancova": 'car::Anova(lm({dv} ~ {group} + {covariates_plus}, data = d), type = 2)',
+}
+
+
+def emit_code(entry, spec, params):
+    roles = {k: (v if isinstance(v, str) else (v[0] if v else ""))
+             for k, v in (spec.get("roles") or {}).items()}
+    fill = dict(params or {})
+    fill.update(roles)
+    fill["welch_not"] = "False" if params.get("welch", True) else "True"
+    fill["r_var_equal"] = "FALSE" if params.get("welch", True) else "TRUE"
+    fill["yates"] = str(bool(params.get("yates", True)))
+    fill.setdefault("alternative", "two-sided")
+    fill.setdefault("method", "pearson")
+    for key in ("covariates", "predictors"):
+        cols = (spec.get("roles") or {}).get(key) or []
+        fill[f"{key}_plus"] = " + ".join([cols] if isinstance(cols, str) else cols)
+
+    def safe(tpl):
+        try:
+            return tpl.format(**{k: v for k, v in fill.items() if v is not None})
+        except (KeyError, IndexError, ValueError):
+            return tpl
+
+    py = CODE_PY.get(entry["id"])
+    r = CODE_R.get(entry["id"])
+    header_py = (
+        "import pandas as pd\n"
+        "from scipy import stats\n"
+        f"df = pd.read_csv('data.csv')\n"
+        f"# seed {get('seed')}, alpha {get('alpha')}\n"
+    )
+    return {
+        "python": (header_py + safe(py)) if py else
+                  f"# No emitted snippet for {entry['id']} yet.",
+        "r": safe(r) if r else f"# No emitted snippet for {entry['id']} yet.",
+    }
