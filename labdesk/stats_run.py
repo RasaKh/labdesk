@@ -11,6 +11,7 @@ A runner never sees a request object and never formats anything for display.
 It takes (df, roles, params, ctl) and returns a plain dict.
 """
 import math
+import time
 
 import numpy as np
 import pandas as pd
@@ -362,3 +363,130 @@ def emit_code(entry, spec, params):
                   f"# No emitted snippet for {entry['id']} yet.",
         "r": safe(r) if r else f"# No emitted snippet for {entry['id']} yet.",
     }
+_RUNNERS = None
+
+
+def runners():
+    global _RUNNERS
+    if _RUNNERS is None:
+        from .runners import RUNNERS
+        _RUNNERS = RUNNERS
+    return _RUNNERS
+
+
+def versions():
+    import sys
+    out = {"python": sys.version.split()[0]}
+    for m in ("numpy", "pandas", "scipy", "statsmodels", "pingouin", "lifelines",
+              "sklearn", "matplotlib"):
+        try:
+            import importlib
+            out[m] = getattr(importlib.import_module(m), "__version__", "?")
+        except Exception:
+            pass
+    return out
+
+
+def run(spec, ctl=None):
+    t0 = time.time()
+    requested_entry = REGISTRY.get(spec.get("test"))
+    if not requested_entry:
+        raise ValueError(f"Unknown test {spec.get('test')!r}.")
+
+    pre = preflight(spec)
+    if pre["errors"]:
+        return {"ok": False, "errors": pre["errors"], "checks": pre["checks"]}
+
+    try:
+        df, roles, m, project_id = _dataset_context(spec)
+    except Exception as exc:
+        return {"ok": False, "errors": [str(exc)], "checks": pre.get("checks", [])}
+
+    entry = requested_entry
+    used_test = entry["id"]
+    note = None
+    if pre["action"].startswith("fallback:") and entry.get("fallback"):
+        used_test = entry["fallback"]
+        note = (f"Assumption failure switched this to {REGISTRY[used_test]['label']} "
+                f"automatically ({pre['message']}).")
+        entry = REGISTRY[used_test]
+    elif not pre["ok"]:
+        db.log_run(project_id=project_id, dataset_id=spec.get("dataset"),
+                   dataset_sha=m["sha256"] if m else None,
+                   dictionary_sha=m.get("dictionary_sha") if m else None,
+                   test_id=entry["id"], spec=spec, assumptions=pre["checks"],
+                   status="blocked", error=pre["message"], seed=get("seed"), alpha=get("alpha"), ci_level=get("ci_level"),
+                   versions=versions(), duration_ms=0)
+        return {"ok": False, "blocked": True, "errors": [pre["message"]],
+                "checks": pre["checks"],
+                "fallback": entry.get("fallback")}
+
+    errors, params = validate_spec(entry, spec, df=df,
+                                   dictionary=(m or {}).get("dictionary"))
+    if errors:
+        # A fallback can have a stricter contract than the requested method.
+        db.log_run(project_id=project_id, dataset_id=spec.get("dataset"),
+                   dataset_sha=m["sha256"] if m else None,
+                   dictionary_sha=m.get("dictionary_sha") if m else None,
+                   test_id=used_test, spec=spec, assumptions=pre["checks"],
+                   status="blocked", error="; ".join(errors), seed=get("seed"), alpha=get("alpha"), ci_level=get("ci_level"),
+                   versions=versions(), duration_ms=int((time.time() - t0) * 1000),
+                   note=note)
+        return {"ok": False, "blocked": True, "errors": errors,
+                "checks": pre["checks"]}
+
+    final_code = emit_code(entry, spec, params)
+
+    fn = runners().get(used_test)
+    if fn is None:
+        msg = (f"{entry['label']} is declared but its runner is not written yet.\n"
+               f"Add to labdesk/runners/: def {used_test}(df, roles, params, ctl) -> dict")
+        db.log_run(project_id=project_id, dataset_id=spec.get("dataset"),
+                   dataset_sha=m["sha256"] if m else None,
+                   dictionary_sha=m.get("dictionary_sha") if m else None,
+                   test_id=used_test, spec=spec, assumptions=pre["checks"],
+                   status="failed", error=msg, seed=get("seed"), alpha=get("alpha"), ci_level=get("ci_level"), versions=versions(),
+                   duration_ms=int((time.time() - t0) * 1000), note=note,
+                   code_python=final_code["python"], code_r=final_code["r"])
+        raise NotImplementedRunner(msg)
+
+    # Runtime context is deliberately injected only after validation/code
+    # emission. Runners that need ledger/workspace context can consume these
+    # private keys without making them part of the user's statistical spec.
+    runtime_params = dict(params)
+    runtime_params["_project_id"] = project_id
+    runtime_params["_dataset_sha"] = m.get("sha256") if m else None
+    try:
+        result = fn(df, roles, runtime_params, ctl)
+    except Exception as exc:
+        db.log_run(project_id=project_id, dataset_id=spec.get("dataset"),
+                   dataset_sha=m["sha256"] if m else None,
+                   dictionary_sha=m.get("dictionary_sha") if m else None,
+                   test_id=used_test, spec=spec, assumptions=pre["checks"],
+                   status="failed", error=f"{type(exc).__name__}: {exc}",
+                   seed=get("seed"), alpha=get("alpha"), ci_level=get("ci_level"), versions=versions(),
+                   duration_ms=int((time.time() - t0) * 1000), note=note,
+                   code_python=final_code["python"], code_r=final_code["r"])
+        raise
+    result.setdefault("test", entry["label"])
+    result.setdefault("test_id", used_test)
+    if note:
+        result["note"] = note
+
+    run_id = db.log_run(
+        project_id=project_id, dataset_id=spec.get("dataset"),
+        dataset_sha=m["sha256"] if m else None,
+        dictionary_sha=m.get("dictionary_sha") if m else None,
+        test_id=used_test, spec=spec, assumptions=pre["checks"],
+        result=result, code_python=final_code["python"], code_r=final_code["r"],
+        seed=get("seed"), alpha=get("alpha"), ci_level=get("ci_level"), versions=versions(), status="ok",
+        duration_ms=int((time.time() - t0) * 1000), note=note,
+    )
+    result["run_id"] = run_id
+    result["project_id"] = project_id
+    result["checks"] = pre["checks"]
+    result["code"] = final_code
+    result["prior_runs"] = pre["prior_runs"]
+    result["multiplicity_nag"] = pre["multiplicity_nag"]
+    result["ok"] = True
+    return result
