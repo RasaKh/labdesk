@@ -10,6 +10,7 @@ the provenance ledger.
 A runner never sees a request object and never formats anything for display.
 It takes (df, roles, params, ctl) and returns a plain dict.
 """
+
 import math
 import time
 
@@ -21,6 +22,16 @@ from . import datasets, db
 from .config import get
 from .schema import validate_spec
 from .stats_registry import REGISTRY
+
+
+class NotImplementedRunner(Exception):
+    pass
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Number formatting. Centralised, because inconsistent p value formatting
+#  across a manuscript is the fastest way to look careless.
+# ─────────────────────────────────────────────────────────────────────────
 
 def fmt_p(p, style=None):
     if p is None or (isinstance(p, float) and math.isnan(p)):
@@ -58,6 +69,12 @@ def stars(p, thresholds=None, ns=None):
 def ci_str(lo, hi, level=None):
     level = level or get("ci_level", 0.95)
     return f"{int(level*100)}% CI [{fmt_n(lo)}, {fmt_n(hi)}]"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Effect sizes
+# ─────────────────────────────────────────────────────────────────────────
+
 def cohen_d(a, b, paired=False, pooled=True):
     a = pd.Series(a).dropna().astype(float)
     b = pd.Series(b).dropna().astype(float)
@@ -195,6 +212,12 @@ def adjust_p(pvals, method="holm"):
     back[order] = adj
     out[ok] = back
     return out.tolist()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Role resolution and preflight
+# ─────────────────────────────────────────────────────────────────────────
+
 def resolve(spec):
     ds_id = spec.get("dataset")
     df = datasets.load(ds_id) if ds_id else None
@@ -363,6 +386,12 @@ def emit_code(entry, spec, params):
                   f"# No emitted snippet for {entry['id']} yet.",
         "r": safe(r) if r else f"# No emitted snippet for {entry['id']} yet.",
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Dispatch
+# ─────────────────────────────────────────────────────────────────────────
+
 _RUNNERS = None
 
 
