@@ -14,6 +14,10 @@ claims and final method choice remain human decisions.
 
 from __future__ import annotations
 
+from .schema import _KIND_COMPAT
+from .stats_registry import READY, TESTS
+
+
 GOALS = {
     "describe": {
         "label": "Describe / check data",
@@ -121,3 +125,89 @@ def public_goals():
              "primary_label": g["primary_label"],
              "secondary_label": g["secondary_label"]}
             for gid, g in GOALS.items()]
+
+def _n_levels(meta):
+    if meta.get("n_unique") is not None:
+        try:
+            return int(meta["n_unique"])
+        except (TypeError, ValueError):
+            pass
+    levels = meta.get("levels")
+    return len(levels) if isinstance(levels, list) else None
+
+def role_accepts(role, column, dictionary):
+    """Whether one reviewed dictionary column satisfies one declared role."""
+    meta = (dictionary or {}).get(column) or {}
+    actual = meta.get("kind")
+    allowed = _KIND_COMPAT.get(role.get("kind", "any"), {role.get("kind", "any")})
+    if actual not in allowed:
+        return False
+    req = role.get("levels")
+    if req is not None:
+        n = _n_levels(meta)
+        if n is None:
+            return False
+        if isinstance(req, (list, tuple)):
+            lo, hi = req[0], req[-1]
+            if n < lo or n > hi:
+                return False
+        elif n != req:
+            return False
+    return True
+
+def role_options(entry, dictionary):
+    cols = list((dictionary or {}).keys())
+    return {r["id"]: [c for c in cols if role_accepts(r, c, dictionary)]
+            for r in entry.get("roles", [])}
+
+def _has_required_assignment(entry, options):
+    """True if required role slots can be filled with distinct variables.
+
+    The backtracking is intentionally tiny: registry role minima are small and
+    datasets rarely have enough role types to make this expensive. It protects
+    against a misleading match such as one binary column being the only option
+    for two distinct required roles.
+    """
+    slots = []
+    for role in entry.get("roles", []):
+        need = int(role.get("min", 0) or 0)
+        if role.get("optional"):
+            need = 0
+        opts = options.get(role["id"], [])
+        if len(opts) < need:
+            return False
+        slots.extend((role["id"], opts) for _ in range(need))
+    slots.sort(key=lambda item: len(item[1]))
+
+    def place(i, used):
+        if i == len(slots):
+            return True
+        _rid, opts = slots[i]
+        for col in opts:
+            if col not in used and place(i + 1, used | {col}):
+                return True
+        return False
+
+    return place(0, set())
+
+def _entries_for_goal(goal_id):
+    goal = GOALS.get(goal_id)
+    if not goal:
+        raise ValueError(f"Unknown analysis goal {goal_id!r}.")
+    include = goal.get("include")
+    groups = goal.get("groups")
+    exclude = goal.get("exclude", set())
+    out = []
+    for entry in TESTS:
+        if entry.get("status") != READY or entry["id"] in exclude:
+            continue
+        if include is not None and entry["id"] not in include:
+            continue
+        if groups is not None and entry.get("group") not in groups:
+            continue
+        # The guide is about analyses driven by dataset variables. Registry
+        # utilities with no roles remain available in the manual library.
+        if not entry.get("roles"):
+            continue
+        out.append(entry)
+    return out
