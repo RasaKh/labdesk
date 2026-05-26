@@ -211,3 +211,116 @@ def _entries_for_goal(goal_id):
             continue
         out.append(entry)
     return out
+
+def _anchor_role(entry, preferred_ids, anchor, dictionary, already=None):
+    if not anchor:
+        return None
+    already = already or {}
+    by_id = {r["id"]: r for r in entry.get("roles", [])}
+    for rid in preferred_ids:
+        role = by_id.get(rid)
+        if not role or not role_accepts(role, anchor, dictionary):
+            continue
+        cur = list(already.get(rid, []))
+        if anchor in cur:
+            return rid
+        if role.get("max", 1) == 1 and cur:
+            continue
+        return rid
+    return None
+
+def _prefill(entry, goal, dictionary, primary=None, secondary=None):
+    """Map user-selected anchor variables to compatible declared roles."""
+    roles = {}
+    p_role = _anchor_role(entry, goal["primary_roles"], primary, dictionary, roles)
+    if p_role:
+        roles[p_role] = [primary]
+    s_role = _anchor_role(entry, goal["secondary_roles"], secondary, dictionary, roles)
+    if s_role:
+        roles.setdefault(s_role, [])
+        if secondary not in roles[s_role]:
+            roles[s_role].append(secondary)
+    return roles, bool(primary and p_role), bool(secondary and s_role)
+
+def _prefill_can_complete(entry, options, prefill):
+    """Verify there is still a distinct assignment after applying anchors."""
+    used = {c for values in prefill.values() for c in values}
+    slots = []
+    for role in entry.get("roles", []):
+        rid = role["id"]
+        need = 0 if role.get("optional") else int(role.get("min", 0) or 0)
+        have = len(prefill.get(rid, []))
+        remaining = max(0, need - have)
+        opts = [c for c in options.get(rid, []) if c not in used]
+        if len(opts) < remaining:
+            return False
+        slots.extend((rid, opts) for _ in range(remaining))
+    slots.sort(key=lambda item: len(item[1]))
+
+    def place(i, occupied):
+        if i == len(slots):
+            return True
+        _rid, opts = slots[i]
+        for col in opts:
+            if col not in occupied and place(i + 1, occupied | {col}):
+                return True
+        return False
+
+    return place(0, set(used))
+
+def compatible_methods(dictionary, goal_id="compare", primary=None, secondary=None,
+                       limit=12):
+    """Return structurally compatible READY methods for the current dataset.
+
+    `primary` and `secondary` are researcher-selected anchors, not inferred
+    semantics. If supplied, methods are retained only when those anchors can be
+    mapped to the goal's corresponding declared roles.
+    """
+    if primary and primary not in dictionary:
+        raise ValueError(f"Unknown variable {primary!r}.")
+    if secondary and secondary not in dictionary:
+        raise ValueError(f"Unknown variable {secondary!r}.")
+    if primary and secondary and primary == secondary:
+        raise ValueError("Choose two different variables for the two guide fields.")
+
+    goal = GOALS.get(goal_id)
+    if not goal:
+        raise ValueError(f"Unknown analysis goal {goal_id!r}.")
+
+    results = []
+    for order, entry in enumerate(_entries_for_goal(goal_id)):
+        opts = role_options(entry, dictionary)
+        if not _has_required_assignment(entry, opts):
+            continue
+        prefill, p_used, s_used = _prefill(entry, goal, dictionary, primary, secondary)
+        if primary and not p_used:
+            continue
+        if secondary and not s_used:
+            continue
+        if not _prefill_can_complete(entry, opts, prefill):
+            continue
+
+        # Anchored matches come first; otherwise preserve the registry's
+        # deliberate pedagogical order rather than pretending to rank evidence.
+        score = (2 if p_used else 0) + (2 if s_used else 0)
+        results.append((score, -order, {
+            "id": entry["id"], "label": entry["label"], "group": entry["group"],
+            "blurb": entry.get("blurb", ""), "prefill": prefill,
+            "role_options": opts,
+        }))
+
+    results.sort(key=lambda x: (-x[0], -x[1]))
+    total = len(results)
+    items = [x[2] for x in results[:max(1, int(limit))]]
+    return {
+        "goal": goal_id,
+        "primary": primary,
+        "secondary": secondary,
+        "total": total,
+        "items": items,
+        "disclaimer": (
+            "Compatibility is deterministic. LabDesk matches the reviewed variable "
+            "dictionary to each method's declared roles; it does not infer the scientific "
+            "question, estimand, causal structure, preregistration, or the method you should use."
+        ),
+    }
