@@ -126,6 +126,7 @@ def public_goals():
              "secondary_label": g["secondary_label"]}
             for gid, g in GOALS.items()]
 
+
 def _n_levels(meta):
     if meta.get("n_unique") is not None:
         try:
@@ -134,6 +135,7 @@ def _n_levels(meta):
             pass
     levels = meta.get("levels")
     return len(levels) if isinstance(levels, list) else None
+
 
 def role_accepts(role, column, dictionary):
     """Whether one reviewed dictionary column satisfies one declared role."""
@@ -155,10 +157,12 @@ def role_accepts(role, column, dictionary):
             return False
     return True
 
+
 def role_options(entry, dictionary):
     cols = list((dictionary or {}).keys())
     return {r["id"]: [c for c in cols if role_accepts(r, c, dictionary)]
             for r in entry.get("roles", [])}
+
 
 def _has_required_assignment(entry, options):
     """True if required role slots can be filled with distinct variables.
@@ -190,6 +194,7 @@ def _has_required_assignment(entry, options):
 
     return place(0, set())
 
+
 def _entries_for_goal(goal_id):
     goal = GOALS.get(goal_id)
     if not goal:
@@ -212,6 +217,7 @@ def _entries_for_goal(goal_id):
         out.append(entry)
     return out
 
+
 def _anchor_role(entry, preferred_ids, anchor, dictionary, already=None):
     if not anchor:
         return None
@@ -229,6 +235,7 @@ def _anchor_role(entry, preferred_ids, anchor, dictionary, already=None):
         return rid
     return None
 
+
 def _prefill(entry, goal, dictionary, primary=None, secondary=None):
     """Map user-selected anchor variables to compatible declared roles."""
     roles = {}
@@ -241,6 +248,7 @@ def _prefill(entry, goal, dictionary, primary=None, secondary=None):
         if secondary not in roles[s_role]:
             roles[s_role].append(secondary)
     return roles, bool(primary and p_role), bool(secondary and s_role)
+
 
 def _prefill_can_complete(entry, options, prefill):
     """Verify there is still a distinct assignment after applying anchors."""
@@ -267,6 +275,7 @@ def _prefill_can_complete(entry, options, prefill):
         return False
 
     return place(0, set(used))
+
 
 def compatible_methods(dictionary, goal_id="compare", primary=None, secondary=None,
                        limit=12):
