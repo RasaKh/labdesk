@@ -101,3 +101,110 @@ def levels_exactly(df, group, k):
               f"{group} has {n} levels, this test needs exactly {k}.",
               fix=("Use the omnibus test for more than two groups, or filter to two levels."
                    if n > k else "Choose a factor with more levels."))
+def expected_counts(table, min_expected=5):
+    chi2, p, dof, exp = stats.chi2_contingency(table)
+    small = int((exp < min_expected).sum())
+    frac = small / exp.size
+    if small == 0:
+        return _r("expected_counts", "Expected cell counts", PASS,
+                  f"All {exp.size} expected counts are at least {min_expected}.")
+    if frac <= 0.2 and exp.min() >= 1:
+        return _r("expected_counts", "Expected cell counts", CAUTION,
+                  f"{small} of {exp.size} expected counts below {min_expected} "
+                  f"(minimum {exp.min():.1f}). Cochran's rule tolerates up to 20%.")
+    return _r("expected_counts", "Expected cell counts", FAIL,
+              f"{small} of {exp.size} expected counts below {min_expected} "
+              f"(minimum {exp.min():.1f}).", fallback="fisher_exact",
+              fix="Use Fisher's exact test, or collapse sparse categories.")
+
+
+def sphericity(df, subject, within, dv, corrected=False):
+    """Mauchly's test. Needs pingouin; without it we say so rather than guess."""
+    try:
+        import pingouin as pg
+    except Exception:
+        return _r("sphericity", "Sphericity", SKIP,
+                  "Mauchly's test needs pingouin. pip install pingouin")
+    spher, W, chi2, dof, p = pg.sphericity(df, dv=dv, subject=subject, within=within)
+    if spher:
+        return _r("sphericity", "Sphericity", PASS,
+                  f"Mauchly W = {W:.3f}, p = {p:.3f}.", W, p)
+    if corrected:
+        return _r("sphericity", "Sphericity", CAUTION,
+                  f"Mauchly W = {W:.3f}, p = {p:.4f}. Violated; the sphericity "
+                  "correction you selected is applied to the degrees of freedom.", W, p)
+    return _r("sphericity", "Sphericity", FAIL,
+              f"Mauchly W = {W:.3f}, p = {p:.4f}.", W, p, fallback="greenhouse_geisser",
+              fix="Apply the Greenhouse-Geisser correction to the degrees of freedom.")
+
+
+def linearity_residuals(x, y, label="Linearity"):
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    ok = ~(np.isnan(x) | np.isnan(y))
+    x, y = x[ok], y[ok]
+    if len(x) < 5:
+        return _r("linearity", label, SKIP, "Too few complete pairs.")
+    slope, intercept, r, p, se = stats.linregress(x, y)
+    resid = y - (slope * x + intercept)
+    # Quadratic term significance is a cheap, interpretable curvature check.
+    try:
+        c = np.polyfit(x, y, 2)
+        quad_pred = np.polyval(c, x)
+        ss_lin = float(np.sum(resid**2))
+        ss_quad = float(np.sum((y - quad_pred) ** 2))
+        gain = 1 - ss_quad / ss_lin if ss_lin else 0
+    except Exception:
+        gain = 0
+    if gain < 0.02:
+        return _r("linearity", label, PASS,
+                  f"A quadratic term reduces residual variance by only {gain*100:.1f}%.")
+    return _r("linearity", label, CAUTION,
+              f"A quadratic term reduces residual variance by {gain*100:.1f}%. "
+              "The relationship may be curved.",
+              fix="Inspect the scatter plot, consider a transform or a spline term.")
+
+
+def homoscedasticity(resid, fitted):
+    """Breusch-Pagan without statsmodels: regress squared residuals on fitted."""
+    r = np.asarray(resid, float)
+    f = np.asarray(fitted, float)
+    ok = ~(np.isnan(r) | np.isnan(f))
+    r, f = r[ok], f[ok]
+    if len(r) < 8:
+        return _r("homoscedasticity", "Constant variance", SKIP, "Too few residuals.")
+    sq = r**2
+    slope, intercept, rr, p, se = stats.linregress(f, sq)
+    if p >= 0.05:
+        return _r("homoscedasticity", "Constant variance", PASS,
+                  f"Squared residuals show no trend with fitted values (p = {p:.3f}).", None, p)
+    return _r("homoscedasticity", "Constant variance", FAIL,
+              f"Squared residuals trend with fitted values (p = {p:.4f}). "
+              "Standard errors are biased.", None, p, fallback="robust_se",
+              fix="Use heteroscedasticity-consistent (HC3) standard errors, "
+                  "or transform the outcome.")
+
+
+def multicollinearity(df, cols, vif_warn=5, vif_fail=10):
+    sub = df[cols].apply(pd.to_numeric, errors="coerce").dropna()
+    if sub.shape[1] < 2:
+        return _r("vif", "Multicollinearity", SKIP, "Needs at least two predictors.")
+    vifs = {}
+    for c in cols:
+        others = [o for o in cols if o != c]
+        X = np.column_stack([np.ones(len(sub))] + [sub[o].values for o in others])
+        y = sub[c].values
+        beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+        pred = X @ beta
+        ss_res = float(np.sum((y - pred) ** 2))
+        ss_tot = float(np.sum((y - y.mean()) ** 2))
+        r2 = 1 - ss_res / ss_tot if ss_tot else 0
+        vifs[c] = float("inf") if r2 >= 1 else 1 / (1 - r2)
+    worst = max(vifs, key=vifs.get)
+    detail = ", ".join(f"{k}: {v:.1f}" for k, v in sorted(vifs.items(), key=lambda kv: -kv[1]))
+    if vifs[worst] >= vif_fail:
+        return _r("vif", "Multicollinearity", FAIL, f"VIF {detail}.",
+                  fix=f"Drop or combine {worst}; its coefficient is not interpretable.")
+    if vifs[worst] >= vif_warn:
+        return _r("vif", "Multicollinearity", CAUTION, f"VIF {detail}.")
+    return _r("vif", "Multicollinearity", PASS, f"VIF {detail}.")
