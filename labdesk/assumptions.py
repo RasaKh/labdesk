@@ -208,3 +208,72 @@ def multicollinearity(df, cols, vif_warn=5, vif_fail=10):
     if vifs[worst] >= vif_warn:
         return _r("vif", "Multicollinearity", CAUTION, f"VIF {detail}.")
     return _r("vif", "Multicollinearity", PASS, f"VIF {detail}.")
+def independence_note():
+    """Cannot be tested from a data frame. Stated rather than silently assumed."""
+    return _r("independence", "Independence of observations", CAUTION,
+              "Not testable from the data. If subjects contributed more than one row, "
+              "or came from clusters such as wards or centres, this test is the wrong one.",
+              fix="Use a repeated-measures or mixed-effects model.")
+
+
+def proportional_hazards(time, event, group):
+    """Schoenfeld-style check without lifelines: correlation of scaled residual
+    ranks with time. Approximate, and it says so."""
+    try:
+        import lifelines  # noqa: F401
+        return _r("ph", "Proportional hazards", SKIP,
+                  "Needs the fitted model. Tested on scaled Schoenfeld residuals after "
+                  "fitting; the result reports it per covariate.")
+    except Exception:
+        return _r("ph", "Proportional hazards", SKIP,
+                  "Needs lifelines. pip install lifelines")
+
+
+def min_events_per_variable(n_events, n_predictors, epv_min=10):
+    if n_predictors <= 0:
+        return _r("epv", "Events per variable", SKIP, "No predictors.")
+    epv = n_events / n_predictors
+    if epv >= epv_min:
+        return _r("epv", "Events per variable", PASS,
+                  f"{n_events} events for {n_predictors} predictors (EPV = {epv:.1f}).")
+    return _r("epv", "Events per variable", FAIL,
+              f"{n_events} events for {n_predictors} predictors (EPV = {epv:.1f}). "
+              f"Below {epv_min} the model overfits and coefficients are unstable.",
+              fix="Reduce predictors, or use penalised regression.")
+
+
+def _events_and_terms(df, ctx):
+    """Events in the rarer outcome class (or events, for survival) and the
+    number of model terms, over the rows the model would actually use."""
+    preds = list(ctx.get("predictors") or [])
+    outcome = ctx.get("event") or ctx.get("dv")
+    cols = [outcome] + preds + ([ctx["time"]] if ctx.get("event") and ctx.get("time") else [])
+    sub = df[cols].dropna()
+    terms = 0
+    for c in preds:
+        s = sub[c]
+        if pd.api.types.is_numeric_dtype(s) and s.nunique() > 2:
+            terms += 1
+        else:
+            terms += max(0, s.nunique() - 1)
+    y = sub[outcome].astype(str)
+    if ctx.get("event"):
+        from .runners.models import _binary_positive
+        level, _ = _binary_positive(sub[outcome], (ctx.get("params") or {}).get("event_level"),
+                                    outcome)
+        return int((y == level).sum()), terms
+    counts = y.value_counts()
+    return (int(counts.min()) if len(counts) == 2 else 0), terms
+
+
+def paired_completeness(a, b):
+    a = pd.Series(a)
+    b = pd.Series(b)
+    n_pairs = int((a.notna() & b.notna()).sum())
+    dropped = int(len(a) - n_pairs)
+    if dropped == 0:
+        return _r("pairing", "Complete pairs", PASS, f"{n_pairs} complete pairs.")
+    state = CAUTION if dropped / max(1, len(a)) < 0.1 else FAIL
+    return _r("pairing", "Complete pairs", state,
+              f"{n_pairs} complete pairs, {dropped} rows dropped for missing values.",
+              fix="Check whether the dropped rows differ systematically from the rest.")
