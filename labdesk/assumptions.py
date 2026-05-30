@@ -277,3 +277,90 @@ def paired_completeness(a, b):
     return _r("pairing", "Complete pairs", state,
               f"{n_pairs} complete pairs, {dropped} rows dropped for missing values.",
               fix="Check whether the dropped rows differ systematically from the rest.")
+def run_checks(names, ctx):
+    """ctx carries df and resolved role variables. Unknown names are reported
+    rather than skipped silently, so a typo in the registry is visible."""
+    df = ctx.get("df")
+    out = []
+    for name in names or []:
+        try:
+            if name == "normality_by_group":
+                out += normality_by_group(df, ctx["dv"], ctx["group"])
+            elif name == "normality_of_differences":
+                d = pd.to_numeric(df[ctx["a"]], errors="coerce") - \
+                    pd.to_numeric(df[ctx["b"]], errors="coerce")
+                r = normality(d, "Normality of differences")
+                out.append(r)
+            elif name == "normality":
+                out.append(normality(df[ctx["dv"]]))
+            elif name == "homogeneity":
+                out.append(homogeneity(df, ctx["dv"], ctx["group"]))
+            elif name == "group_sizes":
+                out.append(group_sizes(df, ctx["dv"], ctx["group"]))
+            elif name == "two_levels":
+                out.append(levels_exactly(df, ctx["group"], 2))
+            elif name == "three_plus_levels":
+                n = df[ctx["group"]].dropna().nunique()
+                out.append(_r("levels", "Factor levels",
+                              PASS if n >= 3 else FAIL,
+                              f"{ctx['group']} has {n} levels."
+                              + ("" if n >= 3 else " This test needs at least three.")))
+            elif name == "expected_counts":
+                out.append(expected_counts(ctx["table"]))
+            elif name == "sphericity":
+                corrected = (ctx.get("params") or {}).get("correction", "none") != "none"
+                out.append(sphericity(df, ctx["subject"], ctx["within"], ctx["dv"],
+                                      corrected=corrected))
+            elif name == "linearity":
+                if ctx.get("x") and ctx.get("y"):
+                    out.append(linearity_residuals(df[ctx["x"]], df[ctx["y"]]))
+                else:
+                    # Covariate models: the outcome must be linear in each covariate.
+                    for c in ctx.get("covariates") or []:
+                        out.append(linearity_residuals(df[c], df[ctx["dv"]],
+                                                       f"Linearity in {c}"))
+            elif name == "independence":
+                out.append(independence_note())
+            elif name == "pairing":
+                out.append(paired_completeness(df[ctx["a"]], df[ctx["b"]]))
+            elif name == "vif":
+                out.append(multicollinearity(df, ctx.get("predictors", [])))
+            elif name == "epv":
+                if "n_events" in ctx:
+                    events, terms = ctx["n_events"], len(ctx.get("predictors", []))
+                else:
+                    events, terms = _events_and_terms(df, ctx)
+                out.append(min_events_per_variable(events, terms))
+            elif name == "proportional_hazards":
+                out.append(proportional_hazards(ctx.get("time"), ctx.get("event"),
+                                                ctx.get("group")))
+            else:
+                out.append(_r(name, name, SKIP, "No checker registered for this assumption."))
+        except Exception as exc:
+            out.append(_r(name, name, SKIP, f"Check failed: {type(exc).__name__}: {exc}"))
+    return out
+
+
+def verdict(checks):
+    states = [c["state"] for c in checks]
+    if FAIL in states:
+        return FAIL
+    if CAUTION in states:
+        return CAUTION
+    return PASS
+
+
+def gate(checks):
+    """Returns (allowed, action, message) under the current policy."""
+    v = verdict(checks)
+    policy = get("assumption_policy", "warn")
+    if v != FAIL:
+        return True, "run", None
+    failed = [c for c in checks if c["state"] == FAIL]
+    fb = next((c["fallback"] for c in failed if c.get("fallback")), None)
+    msg = "; ".join(c["label"] + ": " + c["detail"] for c in failed)
+    if policy == "block":
+        return False, "blocked", msg
+    if policy == "auto_fallback" and fb:
+        return True, f"fallback:{fb}", msg
+    return True, "warn", msg
