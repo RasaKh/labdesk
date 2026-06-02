@@ -27,6 +27,12 @@ def _r(key, label, state, detail, stat=None, p=None, fallback=None, fix=None):
             "stat": None if stat is None else float(stat),
             "p": None if p is None else float(p),
             "fallback": fallback, "fix": fix}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Individual checks
+# ─────────────────────────────────────────────────────────────────────────
+
 def normality(values, label="Normality", n_warn=5000):
     v = pd.Series(values).dropna().astype(float)
     n = len(v)
@@ -101,6 +107,8 @@ def levels_exactly(df, group, k):
               f"{group} has {n} levels, this test needs exactly {k}.",
               fix=("Use the omnibus test for more than two groups, or filter to two levels."
                    if n > k else "Choose a factor with more levels."))
+
+
 def expected_counts(table, min_expected=5):
     chi2, p, dof, exp = stats.chi2_contingency(table)
     small = int((exp < min_expected).sum())
@@ -208,6 +216,8 @@ def multicollinearity(df, cols, vif_warn=5, vif_fail=10):
     if vifs[worst] >= vif_warn:
         return _r("vif", "Multicollinearity", CAUTION, f"VIF {detail}.")
     return _r("vif", "Multicollinearity", PASS, f"VIF {detail}.")
+
+
 def independence_note():
     """Cannot be tested from a data frame. Stated rather than silently assumed."""
     return _r("independence", "Independence of observations", CAUTION,
@@ -277,6 +287,12 @@ def paired_completeness(a, b):
     return _r("pairing", "Complete pairs", state,
               f"{n_pairs} complete pairs, {dropped} rows dropped for missing values.",
               fix="Check whether the dropped rows differ systematically from the rest.")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Dispatcher
+# ─────────────────────────────────────────────────────────────────────────
+
 def run_checks(names, ctx):
     """ctx carries df and resolved role variables. Unknown names are reported
     rather than skipped silently, so a typo in the registry is visible."""
