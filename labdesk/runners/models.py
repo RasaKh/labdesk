@@ -7,6 +7,8 @@ import pandas as pd
 from scipy import stats
 
 from ..config import get, have
+from ..stats_run import fmt_p
+from ..stats_run import fmt_p
 
 
 def _one(roles, key):
@@ -371,7 +373,175 @@ def diag_2x2(df, roles, params, ctl=None):
 
 # ─── Survival ────────────────────────────────────────────────────────────
 
+def kaplan_meier(df, roles, params, ctl=None):
+    t_col, e_col = _one(roles, "time"), _one(roles, "event")
+    g_col = _one(roles, "group")
+    cols = [t_col, e_col] + ([g_col] if g_col else [])
+    sub = df[cols].dropna()
+    sub[t_col] = pd.to_numeric(sub[t_col], errors="coerce")
+    sub = sub.dropna(subset=[t_col])
+    event_level, _ = _binary_positive(sub[e_col], params.get("event_level"), e_col)
+    ev = (sub[e_col].astype(str) == event_level).astype(int).to_numpy()
+
+    def km(time, event):
+        order = np.argsort(time)
+        time, event = np.asarray(time)[order], np.asarray(event)[order]
+        n = len(time)
+        at_risk = n
+        S = 1.0
+        var = 0.0
+        pts = [{"t": 0.0, "s": 1.0, "at_risk": n, "lo": 1.0, "hi": 1.0, "events": 0}]
+        for t in np.unique(time):
+            d = int(np.sum((time == t) & (event == 1)))
+            c = int(np.sum((time == t) & (event == 0)))
+            if d:
+                S *= (1 - d / at_risk)
+                var += d / (at_risk * (at_risk - d)) if at_risk > d else 0
+                se = S * math.sqrt(var) if var >= 0 else 0
+                z = 1.959963985
+                pts.append({"t": float(t), "s": float(S), "at_risk": int(at_risk),
+                            "events": d,
+                            "lo": float(max(0, S - z * se)), "hi": float(min(1, S + z * se))})
+            at_risk -= (d + c)
+            if at_risk <= 0:
+                break
+        median = next((p["t"] for p in pts if p["s"] <= 0.5), None)
+        return pts, median
+
+    def logrank(groups):
+        """Two or more group log-rank by the standard O-E construction."""
+        alltimes = np.unique(np.concatenate([g[0][g[1] == 1] for g in groups]))
+        k = len(groups)
+        O = np.zeros(k); E = np.zeros(k)
+        V = np.zeros((k, k))
+        for t in alltimes:
+            n_j = np.array([np.sum(g[0] >= t) for g in groups], float)
+            d_j = np.array([np.sum((g[0] == t) & (g[1] == 1)) for g in groups], float)
+            n, d = n_j.sum(), d_j.sum()
+            if n <= 1 or d == 0:
+                continue
+            e_j = n_j * d / n
+            O += d_j; E += e_j
+            f = d * (n - d) / (n - 1)
+            for i in range(k):
+                for j in range(k):
+                    V[i, j] += f * (n_j[i] * ((i == j) * n - n_j[j]) / n**2)
+        idx = list(range(k - 1))
+        diff = (O - E)[idx]
+        Vs = V[np.ix_(idx, idx)]
+        stat = float(diff @ np.linalg.pinv(Vs) @ diff)
+        return stat, float(stats.chi2.sf(stat, k - 1)), O.tolist(), E.tolist()
+
+    landmarks = [float(x) for x in str(params.get("landmarks") or "").replace(" ", "").split(",") if x]
+    out = {"kind": "survival", "test": "Kaplan-Meier", "time": t_col, "event": e_col,
+           "event_level": event_level, "curves": []}
+    if g_col:
+        groups = []
+        for lvl, g in sub.groupby(g_col, dropna=True, observed=True):
+            mask = sub[g_col] == lvl
+            tt = sub.loc[mask, t_col].values
+            ee = ev[mask.values]
+            pts, med = km(tt, ee)
+            groups.append((tt, ee))
+            entry = {"label": str(lvl), "n": int(len(tt)), "events": int(ee.sum()),
+                     "median": med, "points": pts}
+            if landmarks:
+                entry["landmarks"] = [
+                    {"t": L, "s": next((p["s"] for p in reversed(pts) if p["t"] <= L), 1.0)}
+                    for L in landmarks]
+            out["curves"].append(entry)
+        if params.get("logrank", True) and len(groups) >= 2:
+            stat, p, O, E = logrank(groups)
+            out.update(statistic=stat, df=len(groups) - 1, p=p,
+                       observed=O, expected=E,
+                       sentence=f"Log-rank χ²({len(groups)-1}) = {stat:.2f}, {fmt_p(p)}")
+            if len(groups) == 2:
+                hr = (O[0] / E[0]) / (O[1] / E[1]) if E[0] and E[1] and O[1] else None
+                if hr:
+                    se = math.sqrt(1 / E[0] + 1 / E[1])
+                    out["effects"] = {"hazard_ratio": float(hr),
+                                      "hr_ci": [float(math.exp(math.log(hr) - 1.96 * se)),
+                                                float(math.exp(math.log(hr) + 1.96 * se))],
+                                      "note": "Log-rank derived hazard ratio. "
+                                              "Fit a Cox model for adjusted estimates."}
+    else:
+        pts, med = km(sub[t_col].values, ev)
+        out["curves"].append({"label": "All", "n": int(len(sub)),
+                              "events": int(ev.sum()), "median": med, "points": pts})
+    out["at_risk_table"] = params.get("at_risk", True)
+    return out
+
+
+def cox(df, roles, params, ctl=None):
+    from lifelines import CoxPHFitter
+    t_col, e_col = _one(roles, "time"), _one(roles, "event")
+    preds = roles.get("predictors", [])
+    strata = roles.get("strata") or []
+    _, X, names, keep = _design_frame(df, t_col, preds)
+    time_ = pd.to_numeric(df[t_col], errors="coerce")
+    keep &= df[e_col].notna()
+    for s_col in strata:
+        keep &= df[s_col].notna()
+    if not names:
+        raise ValueError("No usable covariates: every predictor is constant.")
+    if (time_.loc[keep] < 0).any():
+        raise ValueError(f"{t_col} has negative times.")
+    event_level, _ = _binary_positive(df.loc[keep, e_col], params.get("event_level"), e_col)
+    frame = X.loc[keep].copy()
+    frame.columns = names
+    frame["__time__"] = time_.loc[keep]
+    frame["__event__"] = (df.loc[keep, e_col].astype(str) == event_level).astype(int)
+    for s_col in strata:
+        frame[f"__stratum_{s_col}"] = df.loc[keep, s_col].astype(str)
+    n, n_events = len(frame), int(frame["__event__"].sum())
+    if n_events == 0:
+        raise ValueError(f"No events: no row of {e_col} equals {event_level!r}.")
+
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    cph = CoxPHFitter(alpha=1 - level)
+    cph.fit(frame, duration_col="__time__", event_col="__event__",
+            strata=[f"__stratum_{s}" for s in strata] or None)
+    summ = cph.summary
+    ci_log = cph.confidence_intervals_
+    coefs = [{"term": t, "estimate": float(math.exp(summ.loc[t, "coef"])),
+              "log_hr": float(summ.loc[t, "coef"]), "se": float(summ.loc[t, "se(coef)"]),
+              "statistic": float(summ.loc[t, "z"]), "p": float(summ.loc[t, "p"]),
+              "ci": [float(math.exp(ci_log.loc[t].iloc[0])), float(math.exp(ci_log.loc[t].iloc[1]))]}
+             for t in names]
+    lr = cph.log_likelihood_ratio_test()
+    out = {"kind": "cox", "test": "Cox proportional hazards", "time": t_col, "event": e_col,
+           "event_level": event_level, "strata": strata, "n": n, "n_events": n_events,
+           "measure": "Hazard ratio", "ratio_scale": True, "ties": "efron",
+           "coefficients": coefs,
+           "statistic": float(lr.test_statistic), "df": int(lr.degrees_freedom),
+           "p": float(lr.p_value), "statistic_label": "Likelihood-ratio χ²",
+           "effects": {"concordance": float(cph.concordance_index_)},
+           "log_likelihood": float(cph.log_likelihood_),
+           "aic": float(cph.AIC_partial_)}
+    warnings = []
+    epv = n_events / len(names)
+    if epv < 10:
+        warnings.append(f"{n_events} events for {len(names)} terms (EPV ≈ {epv:.1f}). "
+                        "Hazard ratios may be unstable.")
+    if params.get("check_ph", True):
+        from lifelines.statistics import proportional_hazard_test
+        ph = proportional_hazard_test(cph, frame, time_transform="rank").summary
+        out["ph_test"] = [{"term": str(t), "statistic": float(r["test_statistic"]),
+                           "p": float(r["p"])} for t, r in ph.iterrows()]
+        out["ph_method"] = "Scaled Schoenfeld residuals against rank of time"
+        bad = [r["term"] for r in out["ph_test"] if r["p"] < get("alpha", 0.05)]
+        if bad:
+            warnings.append("Proportional hazards may not hold for " + ", ".join(bad)
+                            + ". Consider stratifying by it or adding a time interaction.")
+    if warnings:
+        out["warning"] = " ".join(warnings)
+    out["sentence"] = (f"n = {n}, {n_events} events, likelihood-ratio χ²({out['df']}) = "
+                       f"{out['statistic']:.2f}, {fmt_p(out['p'])}, "
+                       f"C = {out['effects']['concordance']:.3f}")
+    return out
+
 RUNNERS = {
     "linreg": linreg, "logreg": logreg,
     "roc": roc, "diag_2x2": diag_2x2,
+    "kaplan_meier": kaplan_meier, "cox": cox,
 }
