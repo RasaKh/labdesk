@@ -202,6 +202,176 @@ def logreg(df, roles, params, ctl=None):
 
 # ─── Diagnostic accuracy ─────────────────────────────────────────────────
 
+def _delong_var(y, score):
+    """Variance of AUC by the DeLong placement-value method."""
+    pos = score[y == 1]
+    neg = score[y == 0]
+    m, n = len(pos), len(neg)
+    if m == 0 or n == 0:
+        return np.nan, np.nan
+    from scipy.stats import rankdata
+    allv = np.concatenate([pos, neg])
+    r = rankdata(allv)
+    auc = (r[:m].sum() - m * (m + 1) / 2) / (m * n)
+    v10 = np.array([(np.sum(p > neg) + 0.5 * np.sum(p == neg)) / n for p in pos])
+    v01 = np.array([(np.sum(pos > q) + 0.5 * np.sum(pos == q)) / m for q in neg])
+    if m < 2 or n < 2:
+        return float(auc), np.nan
+    var = v10.var(ddof=1) / m + v01.var(ddof=1) / n
+    return float(auc), float(var)
+
+
+def _binary_positive(series, requested=None, label="binary variable"):
+    """Resolve a positive level without relying on lexicographic ordering."""
+    vals = [str(v) for v in series.dropna().unique()]
+    if len(vals) != 2:
+        raise ValueError(f"{label} must contain exactly two observed levels.")
+    if requested not in (None, ""):
+        req = str(requested)
+        if req not in vals:
+            raise ValueError(f"Positive level {req!r} is not present in {label}.")
+        return req, vals
+    # Conventional numeric binary encodings are unambiguous even when CSV import
+    # represents them as floats (e.g. 0.0/1.0).  Handle them numerically before
+    # falling back to textual conventions.
+    try:
+        nums = {v: float(v) for v in vals}
+        numeric_values = set(nums.values())
+        if numeric_values == {0.0, 1.0}:
+            return next(v for v, n in nums.items() if n == 1.0), vals
+    except (TypeError, ValueError):
+        pass
+
+    pos_words = {"1", "true", "yes", "y", "positive", "pos", "present", "case", "event", "disease", "diseased"}
+    neg_words = {"0", "false", "no", "n", "negative", "neg", "absent", "control", "none", "censored"}
+    low = {v: v.strip().lower() for v in vals}
+    hits = [v for v in vals if low[v] in pos_words]
+    if len(hits) == 1:
+        return hits[0], vals
+    neg = [v for v in vals if low[v] in neg_words]
+    if len(neg) == 1:
+        return [v for v in vals if v != neg[0]][0], vals
+    raise ValueError(
+        f"Cannot infer which level of {label} is positive from {vals}. "
+        "Specify the positive level explicitly rather than relying on label sorting."
+    )
+
+def roc(df, roles, params, ctl=None):
+    score_c, truth_c = _one(roles, "score"), _one(roles, "truth")
+    sub = df[[score_c, truth_c]].copy()
+    sub["__score__"] = pd.to_numeric(sub[score_c], errors="coerce")
+    sub = sub.dropna(subset=["__score__", truth_c])
+    pos, tvals = _binary_positive(sub[truth_c], params.get("positive_level"), truth_c)
+    score = sub["__score__"].to_numpy(dtype=float)
+    y = (sub[truth_c].astype(str) == pos).astype(int).to_numpy()
+    if params.get("direction") == "negative":
+        score = -score
+    auc, var = _delong_var(y, score)
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    z = stats.norm.ppf(1 - (1 - level) / 2)
+    se = math.sqrt(var) if var == var else np.nan
+    thresholds = np.unique(score)
+    rows = []
+    P, N = int(y.sum()), int(len(y) - y.sum())
+    if P == 0 or N == 0:
+        raise ValueError("ROC analysis needs at least one positive and one negative observation.")
+    prev_raw = params.get("prevalence")
+    prev = float(prev_raw) if prev_raw not in (None, "") else P / len(y)
+    if not (0 < prev < 1):
+        raise ValueError("Prevalence must be strictly between 0 and 1.")
+    for t in thresholds:
+        pred = score >= t
+        tp = int(np.sum(pred & (y == 1)))
+        fp = int(np.sum(pred & (y == 0)))
+        fn = P - tp
+        tn = N - fp
+        sn = tp / P
+        sp = tn / N
+        lr_p = sn / (1 - sp) if sp < 1 else np.inf
+        lr_n = (1 - sn) / sp if sp else np.inf
+        ppv = (prev * lr_p) / (prev * lr_p + (1 - prev)) if np.isfinite(lr_p) else 1.0
+        # Bayes form for NPV using LR-; the previous implementation named the
+        # posterior disease probability and then inverted it, which obscured
+        # the calculation.
+        post_odds_neg = (prev / (1 - prev)) * lr_n
+        npv = 1 / (1 + post_odds_neg) if np.isfinite(post_odds_neg) else 0.0
+        rows.append({"threshold": float(t), "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+                     "sensitivity": float(sn), "specificity": float(sp),
+                     "youden": float(sn + sp - 1), "ppv": float(ppv), "npv": float(npv),
+                     "lr_pos": float(lr_p), "lr_neg": float(lr_n),
+                     "accuracy": float((tp + tn) / len(y))})
+    rule = params.get("cutpoint", "youden")
+    best = None
+    if rule == "youden":
+        best = max(rows, key=lambda r: r["youden"])
+    elif rule == "closest_topleft":
+        best = min(rows, key=lambda r: (1 - r["sensitivity"]) ** 2 + (1 - r["specificity"]) ** 2)
+    elif rule == "sens_min":
+        c = float(params.get("constraint", 0.9))
+        cands = [r for r in rows if r["sensitivity"] >= c]
+        best = max(cands, key=lambda r: r["specificity"]) if cands else None
+    elif rule == "spec_min":
+        c = float(params.get("constraint", 0.9))
+        cands = [r for r in rows if r["specificity"] >= c]
+        best = max(cands, key=lambda r: r["sensitivity"]) if cands else None
+    curve = sorted(({"fpr": 1 - r["specificity"], "tpr": r["sensitivity"]} for r in rows),
+                   key=lambda d: (d["fpr"], d["tpr"]))
+    auc_ci = ([float(max(0, auc - z * se)), float(min(1, auc + z * se))]
+              if se == se else None)
+    return {"kind": "roc", "test": "ROC analysis", "score": score_c, "truth": truth_c,
+            "positive_class": pos, "n": int(len(y)),
+            "n_positive": P, "n_negative": N, "auc": auc, "auc_ci": auc_ci,
+            "auc_se": se, "prevalence_used": prev,
+            "curve": curve[:4000], "operating_points": rows[:2000],
+            "best": best, "cutpoint_rule": rule,
+            "sentence": (f"AUC = {auc:.3f} " +
+                         (f"({int(level*100)}% CI {auc_ci[0]:.3f} to {auc_ci[1]:.3f})"
+                          if auc_ci else "")),
+            "caveat": ("Predictive values depend on prevalence. The values here use "
+                       f"{prev:.3f}; change it in the parameters if the sample is not "
+                       "representative of the target population.")}
+
+def diag_2x2(df, roles, params, ctl=None):
+    t_col, r_col = _one(roles, "test"), _one(roles, "truth")
+    sub = df[[t_col, r_col]].dropna()
+    tpos, tl = _binary_positive(sub[t_col], params.get("test_positive_level"), t_col)
+    rpos, rl = _binary_positive(sub[r_col], params.get("truth_positive_level"), r_col)
+    pred = (sub[t_col].astype(str) == tpos).to_numpy()
+    truth = (sub[r_col].astype(str) == rpos).to_numpy()
+    tp = int(np.sum(pred & truth)); fp = int(np.sum(pred & ~truth))
+    fn = int(np.sum(~pred & truth)); tn = int(np.sum(~pred & ~truth))
+    from .basic import _prop_ci
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    m = params.get("ci_method", "wilson")
+    sn, sp = tp / max(1, tp + fn), tn / max(1, tn + fp)
+    ppv, npv = tp / max(1, tp + fp), tn / max(1, tn + fn)
+    return {"kind": "diagnostic", "test": "Diagnostic accuracy",
+            "table": [[tp, fp], [fn, tn]],
+            "labels": {"test_positive": tpos, "truth_positive": rpos},
+            "n": int(len(sub)),
+            "metrics": [
+                {"name": "Sensitivity", "value": sn, "ci": list(_prop_ci(tp, tp + fn, m, level))},
+                {"name": "Specificity", "value": sp, "ci": list(_prop_ci(tn, tn + fp, m, level))},
+                {"name": "Positive predictive value", "value": ppv,
+                 "ci": list(_prop_ci(tp, tp + fp, m, level))},
+                {"name": "Negative predictive value", "value": npv,
+                 "ci": list(_prop_ci(tn, tn + fn, m, level))},
+                {"name": "Accuracy", "value": (tp + tn) / len(sub),
+                 "ci": list(_prop_ci(tp + tn, len(sub), m, level))},
+                {"name": "Positive likelihood ratio",
+                 "value": sn / (1 - sp) if sp < 1 else float("inf"), "ci": None},
+                {"name": "Negative likelihood ratio",
+                 "value": (1 - sn) / sp if sp else float("inf"), "ci": None},
+                {"name": "Youden J", "value": sn + sp - 1, "ci": None},
+            ],
+            "prevalence": float(np.mean(truth)),
+            "caveat": "Predictive values apply only at the prevalence in this sample."}
+
+# ─── Survival
+
+# ─── Survival ────────────────────────────────────────────────────────────
+
 RUNNERS = {
     "linreg": linreg, "logreg": logreg,
+    "roc": roc, "diag_2x2": diag_2x2,
 }
