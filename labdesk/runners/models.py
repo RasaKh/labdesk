@@ -8,7 +8,6 @@ from scipy import stats
 
 from ..config import get, have
 from ..stats_run import fmt_p
-from ..stats_run import fmt_p
 
 
 def _one(roles, key):
@@ -611,9 +610,87 @@ def ancova(df, roles, params, ctl=None):
                        f"partial η² = {out['effects']['partial_eta_squared']:.3f}")
     return out
 
+
+def poisson_reg(df, roles, params, ctl=None):
+    import statsmodels.api as sm
+    dv = _one(roles, "dv")
+    preds = roles.get("predictors", [])
+    exposure = _one(roles, "offset")
+    tmp = df.copy()
+    if exposure:
+        tmp["__exposure__"] = pd.to_numeric(df[exposure], errors="coerce")
+    y_s, X_df, names, keep = _design_frame(tmp, dv, preds)
+    if exposure:
+        keep &= tmp["__exposure__"].notna()
+        if (tmp.loc[keep, "__exposure__"] <= 0).any():
+            raise ValueError(f"{exposure} must be positive (person-time, not its logarithm).")
+    y = y_s.loc[keep].to_numpy(dtype=float)
+    X = X_df.loc[keep].to_numpy(dtype=float)
+    n = int(keep.sum())
+    if n == 0:
+        raise ValueError("No complete observations remain after outcome/predictor cleaning.")
+    if (y < 0).any() or not np.allclose(y, np.round(y)):
+        raise ValueError(f"{dv} must contain non-negative whole-number counts.")
+    expo = tmp.loc[keep, "__exposure__"].to_numpy(dtype=float) if exposure else None
+    Xc = sm.add_constant(X, has_constant="add")
+
+    pois = sm.GLM(y, Xc, family=sm.families.Poisson(), exposure=expo).fit()
+    dof = max(1, n - Xc.shape[1])
+    dispersion = float(pois.pearson_chi2 / dof)
+    family = params.get("family", "auto")
+    if family == "auto":
+        family = "negbin" if dispersion > 1.5 else "poisson"
+    if family == "negbin":
+        model = sm.NegativeBinomial(y, Xc, exposure=expo).fit(disp=False, maxiter=200)
+        k = Xc.shape[1]
+        beta, se, pvals = (np.asarray(v)[:k] for v in (model.params, model.bse, model.pvalues))
+        alpha = float(np.asarray(model.params)[-1])
+        llf, aic = float(model.llf), float(model.aic)
+        label = "Negative binomial regression"
+    else:
+        model = pois
+        beta, se, pvals = (np.asarray(v) for v in (pois.params, pois.bse, pois.pvalues))
+        alpha, llf, aic = None, float(pois.llf), float(pois.aic)
+        label = "Poisson regression"
+
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    zcrit = stats.norm.ppf(1 - (1 - level) / 2)
+    terms = ["(Intercept)"] + names
+    coefs = []
+    for t, b, s_, pv in zip(terms, beta, se, pvals):
+        with np.errstate(over="ignore", under="ignore"):
+            coefs.append({"term": t, "estimate": float(np.exp(b)), "log_irr": float(b),
+                          "se": float(s_), "p": float(pv),
+                          "ci": [float(np.exp(b - zcrit * s_)), float(np.exp(b + zcrit * s_))]})
+    out = {"kind": "regression", "test": label, "dv": dv, "n": n,
+           "n_events": int(y.sum()), "family": family,
+           "measure": "Incidence rate ratio", "ratio_scale": True,
+           "coefficients": coefs, "aic": aic, "log_likelihood": llf,
+           "dispersion": dispersion,
+           "dispersion_note": "Pearson chi-square / residual df from the Poisson fit; "
+                              "values well above 1 mean the variance exceeds the mean."}
+    if alpha is not None:
+        out["alpha"] = alpha
+    if exposure:
+        out["exposure"] = exposure
+    notes = []
+    if family == "poisson" and dispersion > 1.5:
+        notes.append(f"Overdispersion (Pearson χ²/df = {dispersion:.2f}) with a Poisson family: "
+                     "standard errors are too small. Choose negative binomial.")
+    if params.get("family", "auto") == "auto":
+        notes.append(f"Family chosen automatically: {label.split(' regression')[0]} "
+                     f"(Pearson χ²/df = {dispersion:.2f}).")
+    if (y == 0).mean() > 0.5 and family != "negbin":
+        notes.append(f"{(y == 0).mean():.0%} of counts are zero; check for excess zeros.")
+    if notes:
+        out["warning"] = " ".join(notes)
+    out["sentence"] = f"n = {n}, {int(y.sum())} events, {label}, Pearson χ²/df = {dispersion:.2f}"
+    return out
+
+
 RUNNERS = {
+    "poisson_reg": poisson_reg,
     "linreg": linreg, "logreg": logreg,
     "roc": roc, "diag_2x2": diag_2x2,
-    "kaplan_meier": kaplan_meier, "cox": cox,
-    "ancova": ancova,
+    "kaplan_meier": kaplan_meier, "cox": cox, "ancova": ancova,
 }
