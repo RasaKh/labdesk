@@ -540,8 +540,80 @@ def cox(df, roles, params, ctl=None):
                        f"C = {out['effects']['concordance']:.3f}")
     return out
 
+
+def ancova(df, roles, params, ctl=None):
+    import statsmodels.formula.api as smf
+    from statsmodels.stats.anova import anova_lm
+    dv, group = _one(roles, "dv"), _one(roles, "group")
+    covs = roles.get("covariates") or []
+    if not covs:
+        raise ValueError("ANCOVA needs at least one covariate.")
+    # Fixed internal names keep arbitrary column labels out of the formula.
+    d = pd.DataFrame({"y": pd.to_numeric(df[dv], errors="coerce"), "g": df[group]})
+    cnames = [f"c{i}" for i in range(len(covs))]
+    for cn, c in zip(cnames, covs):
+        d[cn] = pd.to_numeric(df[c], errors="coerce")
+    d = d.dropna()
+    d["g"] = d["g"].astype(str)
+    levels = [str(lvl) for lvl, _ in df.loc[d.index].groupby(group, observed=True)]
+    if len(levels) < 2:
+        raise ValueError(f"{group} has fewer than two levels with complete data.")
+    rhs = " + ".join(cnames)
+    model = smf.ols(f"y ~ C(g) + {rhs}", data=d).fit()
+    table = anova_lm(model, typ=2)
+    label = {"C(g)": group, "Residual": "Residual", **dict(zip(cnames, covs))}
+    ss_res = float(table.loc["Residual", "sum_sq"])
+    df_res = int(table.loc["Residual", "df"])
+    g_row = table.loc["C(g)"]
+    F, p_val, df_g = float(g_row["F"]), float(g_row["PR(>F)"]), int(g_row["df"])
+    rows = []
+    for key, r in table.iterrows():
+        row = {"source": label[key], "ss": float(r["sum_sq"]), "df": int(r["df"]),
+               "ms": float(r["sum_sq"] / r["df"])}
+        if key != "Residual":
+            row.update(F=float(r["F"]), p=float(r["PR(>F)"]),
+                       partial_eta_squared=float(r["sum_sq"] / (r["sum_sq"] + ss_res)))
+        rows.append(row)
+
+    grouped = d.groupby("g")["y"]
+    out = {"kind": "anova", "test": "ANCOVA", "dv": dv, "factor": group, "covariates": covs,
+           "levels": levels, "n": [int(grouped.size()[l]) for l in levels],
+           "mean": [float(grouped.mean()[l]) for l in levels],
+           "sd": [float(grouped.std(ddof=1)[l]) for l in levels],
+           "sem": [float(grouped.std(ddof=1)[l] / math.sqrt(grouped.size()[l])) for l in levels],
+           "means_note": "Group means and SDs are observed (unadjusted); "
+                         "see adjusted means for the covariate-adjusted comparison.",
+           "statistic": F, "df": [df_g, df_res], "p": p_val, "table": rows,
+           "effects": {"partial_eta_squared": float(g_row["sum_sq"] / (g_row["sum_sq"] + ss_res))},
+           "r_squared": float(model.rsquared)}
+
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    if params.get("emmeans", True):
+        grid = pd.DataFrame({"g": levels, **{cn: float(d[cn].mean()) for cn in cnames}})
+        pred = model.get_prediction(grid).summary_frame(alpha=1 - level)
+        out["adjusted_means"] = [
+            {"group": l, "n": n_l, "observed_mean": m, "adjusted_mean": float(r["mean"]),
+             "se": float(r["mean_se"]), "ci_low": float(r["mean_ci_lower"]),
+             "ci_high": float(r["mean_ci_upper"])}
+            for l, n_l, m, (_, r) in zip(levels, out["n"], out["mean"], pred.iterrows())]
+        out["adjusted_at"] = {c: float(d[cn].mean()) for c, cn in zip(covs, cnames)}
+    if params.get("homog_slopes", True):
+        full = smf.ols(f"y ~ C(g) * ({rhs})", data=d).fit()
+        cmp = anova_lm(model, full)
+        Fs, ps = float(cmp["F"].iloc[1]), float(cmp["Pr(>F)"].iloc[1])
+        out["slopes_test"] = {"F": Fs, "df": [int(cmp["df_diff"].iloc[1]), int(cmp["df_resid"].iloc[1])],
+                              "p": ps}
+        if ps < get("alpha", 0.05):
+            out["warning"] = (f"Regression slopes differ between groups (F = {Fs:.2f}, {fmt_p(ps)}). "
+                              "The adjusted group difference then depends on the covariate value, "
+                              "and a single ANCOVA estimate does not summarise it.")
+    out["sentence"] = (f"F({df_g}, {df_res}) = {F:.2f}, {fmt_p(p_val)}, "
+                       f"partial η² = {out['effects']['partial_eta_squared']:.3f}")
+    return out
+
 RUNNERS = {
     "linreg": linreg, "logreg": logreg,
     "roc": roc, "diag_2x2": diag_2x2,
     "kaplan_meier": kaplan_meier, "cox": cox,
+    "ancova": ancova,
 }
