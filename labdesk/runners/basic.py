@@ -8,12 +8,19 @@ from scipy import stats
 
 from ..config import get, have
 
-from ..stats_run import (cohen_d, cramers_v, fmt_p)
+from ..stats_run import (
+    cles, cohen_d, cramers_v, d_ci,
+    fmt_p, hedges_g, hodges_lehmann, rank_biserial,
+)
 
 
 def _one(roles, key):
     v = roles.get(key) or []
     return v[0] if v else None
+
+
+def _num(df, col):
+    return pd.to_numeric(df[col], errors="coerce")
 
 
 def _groups(df, dv, group):
@@ -226,6 +233,225 @@ def power_achieved(df, roles, params, ctl=None):
 
 # ─── Two groups ──────────────────────────────────────────────────────────
 
+def _two_arrays(df, roles):
+    dv, group = _one(roles, "dv"), _one(roles, "group")
+    g = _groups(df, dv, group)
+    if len(g) != 2:
+        raise ValueError(f"{group} has {len(g)} usable levels; this test needs exactly 2.")
+    return dv, group, g[0], g[1]
+
+
+def ttest_ind(df, roles, params, ctl=None):
+    dv, group, (l1, a), (l2, b) = _two_arrays(df, roles)
+    welch = bool(params.get("welch", True))
+    alt = params.get("alternative", "two-sided")
+    st = stats.ttest_ind(a, b, equal_var=not welch, alternative=alt)
+    d = cohen_d(a, b)
+    g = hedges_g(a, b)
+    lo, hi = d_ci(d, len(a), len(b), params.get("ci", 0.95))
+    diff = float(np.mean(a) - np.mean(b))
+    se = math.sqrt(np.var(a, ddof=1) / len(a) + np.var(b, ddof=1) / len(b))
+    dof = float(getattr(st, "df", len(a) + len(b) - 2))
+    tcrit = stats.t.ppf(1 - (1 - params.get("ci", 0.95)) / 2, dof)
+    return {
+        "kind": "comparison",
+        "test": "Welch t-test" if welch else "Student t-test",
+        "levels": [l1, l2], "n": [len(a), len(b)],
+        "mean": [float(np.mean(a)), float(np.mean(b))],
+        "sd": [float(np.std(a, ddof=1)), float(np.std(b, ddof=1))],
+        "statistic": float(st.statistic), "df": dof, "p": float(st.pvalue),
+        "mean_diff": diff, "diff_ci": [diff - tcrit * se, diff + tcrit * se],
+        "effects": {"cohen_d": d, "hedges_g": g, "d_ci": [lo, hi],
+                    "cles": cles(a, b)},
+        "comparisons": [{"a": l1, "b": l2, "p": float(st.pvalue)}],
+        "sentence": (f"t({dof:.1f}) = {st.statistic:.2f}, {fmt_p(st.pvalue)}, "
+                     f"Hedges g = {g:.2f}"),
+    }
+
+
+def ttest_paired(df, roles, params, ctl=None):
+    a_col, b_col = _one(roles, "a"), _one(roles, "b")
+    pair = df[[a_col, b_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    a, b = pair[a_col].values, pair[b_col].values
+    st = stats.ttest_rel(a, b, alternative=params.get("alternative", "two-sided"))
+    diff = a - b
+    n = len(diff)
+    se = diff.std(ddof=1) / math.sqrt(n)
+    tcrit = stats.t.ppf(1 - (1 - params.get("ci", 0.95)) / 2, n - 1)
+    dz = float(diff.mean() / diff.std(ddof=1)) if diff.std(ddof=1) else float("nan")
+    return {"kind": "comparison", "test": "Paired t-test",
+            "levels": [a_col, b_col], "n": [n, n],
+            "mean": [float(a.mean()), float(b.mean())],
+            "sd": [float(a.std(ddof=1)), float(b.std(ddof=1))],
+            "statistic": float(st.statistic), "df": n - 1, "p": float(st.pvalue),
+            "mean_diff": float(diff.mean()),
+            "diff_ci": [float(diff.mean() - tcrit * se), float(diff.mean() + tcrit * se)],
+            "effects": {"cohen_dz": dz, "hedges_g": hedges_g(a, b, paired=True)},
+            "comparisons": [{"a": a_col, "b": b_col, "p": float(st.pvalue)}],
+            "sentence": f"t({n-1}) = {st.statistic:.2f}, {fmt_p(st.pvalue)}, dz = {dz:.2f}"}
+
+
+def ttest_1samp(df, roles, params, ctl=None):
+    col = _one(roles, "dv")
+    x = _num(df, col).dropna()
+    mu = float(params.get("mu", 0))
+    st = stats.ttest_1samp(x, mu, alternative=params.get("alternative", "two-sided"))
+    se = x.std(ddof=1) / math.sqrt(len(x))
+    tcrit = stats.t.ppf(1 - (1 - params.get("ci", 0.95)) / 2, len(x) - 1)
+    return {"kind": "single", "test": "One-sample t-test", "variable": col,
+            "n": int(len(x)), "mean": float(x.mean()), "sd": float(x.std(ddof=1)),
+            "mu": mu, "statistic": float(st.statistic), "df": len(x) - 1,
+            "p": float(st.pvalue),
+            "mean_ci": [float(x.mean() - tcrit * se), float(x.mean() + tcrit * se)],
+            "effects": {"cohen_d": float((x.mean() - mu) / x.std(ddof=1))}}
+
+
+def mannwhitney(df, roles, params, ctl=None):
+    dv, group, (l1, a), (l2, b) = _two_arrays(df, roles)
+    st = stats.mannwhitneyu(a, b, alternative=params.get("alternative", "two-sided"),
+                            use_continuity=params.get("continuity", True))
+    res = {"kind": "comparison", "test": "Mann-Whitney U",
+           "levels": [l1, l2], "n": [len(a), len(b)],
+           "median": [float(np.median(a)), float(np.median(b))],
+           "iqr": [[float(np.percentile(a, 25)), float(np.percentile(a, 75))],
+                   [float(np.percentile(b, 25)), float(np.percentile(b, 75))]],
+           "statistic": float(st.statistic), "p": float(st.pvalue),
+           "effects": {"rank_biserial": rank_biserial(a, b), "cles": cles(a, b)},
+           "comparisons": [{"a": l1, "b": l2, "p": float(st.pvalue)}]}
+    if params.get("hl", True):
+        res["effects"]["hodges_lehmann"] = hodges_lehmann(a, b)
+    res["sentence"] = f"U = {st.statistic:.0f}, {fmt_p(st.pvalue)}"
+    res["caveat"] = ("Tests whether one group tends to exceed the other. It is a test "
+                     "of medians only if the two distributions have the same shape.")
+    return res
+
+
+def wilcoxon(df, roles, params, ctl=None):
+    a_col, b_col = _one(roles, "a"), _one(roles, "b")
+    pair = df[[a_col, b_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    a, b = pair[a_col].values, pair[b_col].values
+    st = stats.wilcoxon(a, b, alternative=params.get("alternative", "two-sided"),
+                        zero_method=params.get("zero_method", "wilcox"))
+    return {"kind": "comparison", "test": "Wilcoxon signed-rank",
+            "levels": [a_col, b_col], "n": [len(a), len(a)],
+            "median": [float(np.median(a)), float(np.median(b))],
+            "statistic": float(st.statistic), "p": float(st.pvalue),
+            "effects": {"hodges_lehmann": hodges_lehmann(a - b)},
+            "comparisons": [{"a": a_col, "b": b_col, "p": float(st.pvalue)}]}
+
+
+def wilcoxon_1samp(df, roles, params, ctl=None):
+    col = _one(roles, "dv")
+    x = _num(df, col).dropna().values
+    mu = float(params.get("mu", 0))
+    st = stats.wilcoxon(x - mu, alternative=params.get("alternative", "two-sided"))
+    return {"kind": "single", "test": "One-sample Wilcoxon", "variable": col,
+            "n": int(len(x)), "median": float(np.median(x)), "mu": mu,
+            "statistic": float(st.statistic), "p": float(st.pvalue),
+            "effects": {"hodges_lehmann": hodges_lehmann(x - mu)}}
+
+
+def brunner_munzel(df, roles, params, ctl=None):
+    dv, group, (l1, a), (l2, b) = _two_arrays(df, roles)
+    st = stats.brunnermunzel(a, b, alternative=params.get("alternative", "two-sided"))
+    return {"kind": "comparison", "test": "Brunner-Munzel",
+            "levels": [l1, l2], "n": [len(a), len(b)],
+            "median": [float(np.median(a)), float(np.median(b))],
+            "statistic": float(st.statistic), "p": float(st.pvalue),
+            "effects": {"cles": cles(a, b)},
+            "comparisons": [{"a": l1, "b": l2, "p": float(st.pvalue)}]}
+
+
+def permutation_two(df, roles, params, ctl=None):
+    dv, group, (l1, a), (l2, b) = _two_arrays(df, roles)
+    n_perm = int(params.get("n_perm", 10000))
+    kind = params.get("statistic", "mean_diff")
+    rng = np.random.default_rng(get("seed", 0))
+
+    def statf(x, y):
+        if kind == "median_diff":
+            return np.median(x) - np.median(y)
+        if kind == "t":
+            return stats.ttest_ind(x, y, equal_var=False).statistic
+        return np.mean(x) - np.mean(y)
+
+    obs = statf(a, b)
+    pool = np.concatenate([a, b])
+    n1 = len(a)
+    null = np.empty(n_perm)
+    for i in range(n_perm):
+        if ctl and i % 500 == 0:
+            ctl.check()
+            ctl.progress(100 * i / n_perm, f"{i:,} of {n_perm:,} permutations")
+        rng.shuffle(pool)
+        null[i] = statf(pool[:n1], pool[n1:])
+    alt = params.get("alternative", "two-sided")
+    if alt == "greater":
+        p = (np.sum(null >= obs) + 1) / (n_perm + 1)
+    elif alt == "less":
+        p = (np.sum(null <= obs) + 1) / (n_perm + 1)
+    else:
+        p = (np.sum(np.abs(null) >= abs(obs)) + 1) / (n_perm + 1)
+    return {"kind": "comparison", "test": f"Permutation test ({n_perm:,} resamples)",
+            "levels": [l1, l2], "n": [len(a), len(b)],
+            "mean": [float(np.mean(a)), float(np.mean(b))],
+            "statistic": float(obs), "p": float(p),
+            "null_quantiles": [float(np.percentile(null, q)) for q in (2.5, 25, 50, 75, 97.5)],
+            "null_sample": null[:2000].tolist(),
+            "comparisons": [{"a": l1, "b": l2, "p": float(p)}]}
+
+
+def bootstrap_diff(df, roles, params, ctl=None):
+    dv, group, (l1, a), (l2, b) = _two_arrays(df, roles)
+    n_boot = int(params.get("n_boot", 5000))
+    level = float(params.get("ci", 0.95))
+    rng = np.random.default_rng(get("seed", 0))
+    kind = params.get("statistic", "mean")
+
+    def statf(x):
+        if kind == "median":
+            return np.median(x)
+        if kind == "trimmed_mean":
+            return stats.trim_mean(x, 0.1)
+        if kind == "sd":
+            return np.std(x, ddof=1)
+        if kind == "cv":
+            return np.std(x, ddof=1) / np.mean(x) if np.mean(x) else np.nan
+        return np.mean(x)
+
+    obs = statf(a) - statf(b)
+    boot = np.empty(n_boot)
+    for i in range(n_boot):
+        if ctl and i % 500 == 0:
+            ctl.check()
+            ctl.progress(100 * i / n_boot, f"{i:,} of {n_boot:,} resamples")
+        boot[i] = statf(rng.choice(a, len(a), replace=True)) - \
+                  statf(rng.choice(b, len(b), replace=True))
+    alpha = 1 - level
+    if params.get("method", "bca") == "bca":
+        z0 = stats.norm.ppf(np.mean(boot < obs) or 1e-9)
+        jack = np.array([statf(np.delete(a, i)) - statf(b) for i in range(len(a))] +
+                        [statf(a) - statf(np.delete(b, j)) for j in range(len(b))])
+        jm = jack.mean()
+        num = np.sum((jm - jack) ** 3)
+        den = 6 * (np.sum((jm - jack) ** 2) ** 1.5)
+        acc = num / den if den else 0.0
+        def adj(q):
+            z = stats.norm.ppf(q)
+            return stats.norm.cdf(z0 + (z0 + z) / (1 - acc * (z0 + z)))
+        lo, hi = np.percentile(boot, [100 * adj(alpha / 2), 100 * adj(1 - alpha / 2)])
+    else:
+        lo, hi = np.percentile(boot, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    p = 2 * min(np.mean(boot <= 0), np.mean(boot >= 0))
+    return {"kind": "comparison", "test": f"Bootstrap difference in {kind} ({n_boot:,})",
+            "levels": [l1, l2], "n": [len(a), len(b)],
+            "statistic": float(obs), "diff_ci": [float(lo), float(hi)],
+            "p": float(min(1, p)), "boot_sample": boot[:2000].tolist(),
+            "comparisons": [{"a": l1, "b": l2, "p": float(min(1, p))}]}
+
+
+# ─── Three or more groups ────────────────────────────────────────────────
+
 def _table(df, roles):
     r, c = _one(roles, "row"), _one(roles, "col")
     tab = pd.crosstab(df[r], df[c])
@@ -265,5 +491,9 @@ RUNNERS = {
     "crosstab": crosstab, "normality_check": normality_check,
     "variance_check": variance_check, "outlier_check": outlier_check,
     "missing_check": missing_check, "power_achieved": power_achieved,
-    "chi2": chi2,
+    "ttest_ind": ttest_ind, "ttest_paired": ttest_paired,
+    "ttest_1samp": ttest_1samp, "mannwhitney": mannwhitney,
+    "wilcoxon": wilcoxon, "wilcoxon_1samp": wilcoxon_1samp,
+    "brunner_munzel": brunner_munzel, "permutation_two": permutation_two,
+    "bootstrap_diff": bootstrap_diff, "chi2": chi2,
 }
