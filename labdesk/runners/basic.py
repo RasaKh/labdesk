@@ -866,6 +866,239 @@ def chi2(df, roles, params, ctl=None):
                           "below 5. Fisher's exact test is the safer choice.")
     return res
 
+
+def fisher(df, roles, params, ctl=None):
+    r, c, tab = _table(df, roles)
+    label = "Fisher's exact test"
+    if tab.shape == (2, 2):
+        odds, p = stats.fisher_exact(tab.values,
+                                     alternative=params.get("alternative", "two-sided"))
+    else:
+        # SciPy >=1.15 provides an exact/Monte-Carlo RxC implementation.  On
+        # older SciPy versions, fail explicitly rather than silently replacing
+        # Fisher with a chi-square test while keeping the Fisher label.
+        try:
+            res = stats.fisher_exact(tab.values)
+        except (TypeError, ValueError, NotImplementedError) as exc:
+            raise ValueError(
+                "RxC Fisher exact testing is unavailable in this SciPy build. "
+                "Use the chi-square analysis explicitly; LabDesk will not silently substitute it."
+            ) from exc
+        odds, p = res.statistic, res.pvalue
+        label = "Fisher exact test (RxC)"
+    out = {"kind": "categorical", "test": label,
+           "row_var": r, "col_var": c,
+           "levels_row": [str(x) for x in tab.index],
+           "levels_col": [str(x) for x in tab.columns],
+           "counts": tab.values.tolist(), "p": float(p),
+           "n": int(tab.values.sum()),
+           "effects": {"odds_ratio": None if odds is None else float(odds)},
+           "sentence": f"{label}, {fmt_p(p)}"}
+    if tab.shape == (2, 2) and odds is not None and np.isfinite(odds) and odds > 0:
+        a, b, c_, d = tab.values.ravel()
+        # The simple log-OR interval is undefined with zero cells; Haldane's
+        # correction is used only for the interval, not for the exact test.
+        vals = np.asarray([a, b, c_, d], dtype=float)
+        if np.any(vals == 0):
+            vals = vals + 0.5
+            or_ci_center = vals[0] * vals[3] / (vals[1] * vals[2])
+        else:
+            or_ci_center = float(odds)
+        se = math.sqrt(np.sum(1 / vals))
+        z = stats.norm.ppf(1 - (1 - get("ci_level", 0.95)) / 2)
+        out["effects"]["or_ci"] = [float(math.exp(math.log(or_ci_center) - z * se)),
+                                    float(math.exp(math.log(or_ci_center) + z * se))]
+    return out
+
+def mcnemar(df, roles, params, ctl=None):
+    a_col, b_col = _one(roles, "a"), _one(roles, "b")
+    sub = df[[a_col, b_col]].dropna()
+    tab = pd.crosstab(sub[a_col], sub[b_col])
+    if tab.shape != (2, 2):
+        raise ValueError("McNemar needs two binary variables.")
+    n01, n10 = int(tab.iloc[0, 1]), int(tab.iloc[1, 0])
+    if params.get("exact", True) or (n01 + n10) < 25:
+        p = float(stats.binomtest(n01, n01 + n10, 0.5).pvalue) if n01 + n10 else 1.0
+        stat, test = None, "McNemar exact (binomial)"
+    else:
+        stat = (abs(n01 - n10) - 1) ** 2 / (n01 + n10)
+        p = float(stats.chi2.sf(stat, 1))
+        test = "McNemar with continuity correction"
+    return {"kind": "categorical", "test": test, "row_var": a_col, "col_var": b_col,
+            "levels_row": [str(x) for x in tab.index],
+            "levels_col": [str(x) for x in tab.columns],
+            "counts": tab.values.tolist(),
+            "discordant": [n01, n10],
+            "statistic": stat, "p": p, "n": int(tab.values.sum()),
+            "effects": {"odds_ratio_paired": float(n01 / n10) if n10 else None},
+            "sentence": f"{test}, {fmt_p(p)}"}
+
+
+def cochran_q(df, roles, params, ctl=None):
+    cols = roles.get("vars", [])
+    sub = df[cols].dropna().astype(float)
+    k = len(cols)
+    n = len(sub)
+    col_sums = sub.sum(axis=0).values
+    row_sums = sub.sum(axis=1).values
+    num = (k - 1) * (k * (col_sums**2).sum() - col_sums.sum() ** 2)
+    den = k * row_sums.sum() - (row_sums**2).sum()
+    Q = float(num / den) if den else np.nan
+    p = float(stats.chi2.sf(Q, k - 1))
+    res = {"kind": "categorical", "test": "Cochran's Q", "statistic": Q,
+           "df": k - 1, "p": p, "n": n,
+           "levels_col": cols, "proportions": (col_sums / n).round(4).tolist(),
+           "sentence": f"Q({k-1}) = {Q:.2f}, {fmt_p(p)}"}
+    if params.get("posthoc", True):
+        rows = []
+        for i in range(k):
+            for j in range(i + 1, k):
+                a, b = sub[cols[i]], sub[cols[j]]
+                n01 = int(((a == 0) & (b == 1)).sum())
+                n10 = int(((a == 1) & (b == 0)).sum())
+                pp = float(stats.binomtest(n01, n01 + n10, 0.5).pvalue) if n01 + n10 else 1.0
+                rows.append({"a": cols[i], "b": cols[j], "p_raw": pp})
+        adj = adjust_p([r["p_raw"] for r in rows], params.get("correction", "holm"))
+        for r, v in zip(rows, adj):
+            r["p"] = v
+        res["comparisons"] = rows
+    return res
+
+
+def armitage(df, roles, params, ctl=None):
+    out_col, ord_col = _one(roles, "outcome"), _one(roles, "ordered")
+    sub = df[[out_col, ord_col]].dropna()
+    tab = pd.crosstab(sub[ord_col], sub[out_col])
+    scores = np.arange(len(tab.index), dtype=float)
+    n_i = tab.sum(axis=1).values
+    r_i = tab.iloc[:, -1].values
+    N = n_i.sum()
+    R = r_i.sum()
+    pbar = R / N
+    T = float(np.sum(scores * (r_i - n_i * pbar)))
+    var = pbar * (1 - pbar) * (np.sum(n_i * scores**2) - (np.sum(n_i * scores) ** 2) / N)
+    z = T / math.sqrt(var) if var > 0 else np.nan
+    alt = params.get("alternative", "two-sided")
+    if np.isnan(z):
+        p = np.nan
+    elif alt == "greater":
+        p = float(stats.norm.sf(z))
+    elif alt == "less":
+        p = float(stats.norm.cdf(z))
+    else:
+        p = float(2 * stats.norm.sf(abs(z)))
+    return {"kind": "categorical", "test": "Cochran-Armitage trend test",
+            "levels_row": [str(x) for x in tab.index],
+            "counts": tab.values.tolist(),
+            "proportions": (r_i / n_i).round(4).tolist(),
+            "statistic": float(z), "p": p, "n": int(N),
+            "sentence": f"z = {z:.2f}, {fmt_p(p)}"}
+
+
+def _prop_ci(k, n, method="wilson", level=0.95):
+    if n == 0:
+        return (np.nan, np.nan)
+    z = stats.norm.ppf(1 - (1 - level) / 2)
+    p = k / n
+    if method == "wald":
+        se = math.sqrt(p * (1 - p) / n)
+        return (p - z * se, p + z * se)
+    if method == "exact":
+        lo = stats.beta.ppf((1 - level) / 2, k, n - k + 1) if k else 0.0
+        hi = stats.beta.ppf(1 - (1 - level) / 2, k + 1, n - k) if k < n else 1.0
+        return (float(lo), float(hi))
+    if method == "agresti":
+        kt, nt = k + z**2 / 2, n + z**2
+        pt = kt / nt
+        se = math.sqrt(pt * (1 - pt) / nt)
+        return (pt - z * se, pt + z * se)
+    den = 1 + z**2 / n
+    centre = (p + z**2 / (2 * n)) / den
+    half = z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / den
+    return (centre - half, centre + half)
+
+
+def prop_test(df, roles, params, ctl=None):
+    out_col, group = _one(roles, "outcome"), _one(roles, "group")
+    sub = df[[out_col, group]].dropna()
+    tab = pd.crosstab(sub[group], sub[out_col])
+    if tab.shape[1] != 2 or tab.shape[0] != 2:
+        raise ValueError("Needs a binary outcome and exactly two groups.")
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    method = params.get("ci_method", "wilson")
+    (a, b), (c, d) = tab.values
+    n1, n2 = a + b, c + d
+    p1, p2 = b / n1, d / n2
+    z = stats.norm.ppf(1 - (1 - level) / 2)
+    eff = {}
+    want = params.get("measures") or ["rr", "or", "rd", "nnt"]
+    if "rr" in want and p2:
+        rr = p1 / p2
+        se = math.sqrt(1 / max(b, .5) - 1 / n1 + 1 / max(d, .5) - 1 / n2)
+        eff["risk_ratio"] = float(rr)
+        eff["rr_ci"] = [float(math.exp(math.log(rr) - z * se)),
+                        float(math.exp(math.log(rr) + z * se))]
+    if "or" in want and a * d:
+        orr = (b * c) / (a * d)
+        se = math.sqrt(sum(1 / max(v, .5) for v in (a, b, c, d)))
+        eff["odds_ratio"] = float(orr)
+        eff["or_ci"] = [float(math.exp(math.log(orr) - z * se)),
+                        float(math.exp(math.log(orr) + z * se))]
+    if "rd" in want:
+        rd = p1 - p2
+        se = math.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
+        eff["risk_difference"] = float(rd)
+        eff["rd_ci"] = [float(rd - z * se), float(rd + z * se)]
+        if "nnt" in want and rd:
+            eff["nnt"] = float(1 / abs(rd))
+    chi2v, p, dof, exp = stats.chi2_contingency(tab.values)
+    return {"kind": "proportions", "test": "Comparison of two proportions",
+            "levels": [str(x) for x in tab.index],
+            "outcome_levels": [str(x) for x in tab.columns],
+            "counts": tab.values.tolist(),
+            "proportions": [float(p1), float(p2)],
+            "prop_ci": [list(_prop_ci(b, n1, method, level)),
+                        list(_prop_ci(d, n2, method, level))],
+            "statistic": float(chi2v), "df": int(dof), "p": float(p),
+            "effects": eff,
+            "sentence": f"χ²({dof}) = {chi2v:.2f}, {fmt_p(p)}"}
+
+
+def binomial(df, roles, params, ctl=None):
+    col = _one(roles, "outcome")
+    s = df[col].dropna()
+    vals = sorted(s.unique())
+    k = int((s == vals[-1]).sum())
+    n = int(len(s))
+    p0 = float(params.get("p0", 0.5))
+    res = stats.binomtest(k, n, p0, alternative=params.get("alternative", "two-sided"))
+    lo, hi = _prop_ci(k, n, "exact", float(params.get("ci", 0.95)))
+    return {"kind": "single", "test": "One-sample proportion (exact)",
+            "variable": col, "k": k, "n": n,
+            "proportion": k / n, "ci": [lo, hi], "p0": p0, "p": float(res.pvalue)}
+
+
+def goodness_fit(df, roles, params, ctl=None):
+    col = _one(roles, "var")
+    counts = df[col].value_counts().sort_index()
+    exp_txt = (params.get("expected") or "").strip()
+    if exp_txt:
+        props = [float(x) for x in exp_txt.replace(" ", "").split(",")]
+        expected = np.array(props) / sum(props) * counts.sum()
+    else:
+        expected = np.full(len(counts), counts.sum() / len(counts))
+    st, p = stats.chisquare(counts.values, expected)
+    return {"kind": "categorical", "test": "Chi-square goodness of fit",
+            "levels_row": [str(x) for x in counts.index],
+            "counts": [counts.values.tolist()],
+            "expected": np.round(expected, 2).tolist(),
+            "statistic": float(st), "df": len(counts) - 1, "p": float(p),
+            "n": int(counts.sum()),
+            "sentence": f"χ²({len(counts)-1}) = {st:.2f}, {fmt_p(p)}"}
+
+
+# ─── Correlation and agreement ───────────────────────────────────────────
+
 RUNNERS = {
     "describe": describe, "freq": freq,
     "crosstab": crosstab, "normality_check": normality_check,
@@ -879,5 +1112,8 @@ RUNNERS = {
     "anova_factorial": anova_factorial, "welch_anova": welch_anova,
     "kruskal": kruskal, "friedman": friedman,
     "pairwise": pairwise, "padjust": padjust,
-    "chi2": chi2,
+    "chi2": chi2, "fisher": fisher,
+    "mcnemar": mcnemar, "cochran_q": cochran_q,
+    "armitage": armitage, "prop_test": prop_test,
+    "binomial": binomial, "goodness_fit": goodness_fit,
 }
