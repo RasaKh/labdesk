@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .. import db
 from ..config import get, have
 
 from ..stats_run import (
@@ -832,6 +833,35 @@ def padjust(df, roles, params, ctl=None):
             "n_adj_sig": sum(1 for a in adj if a is not None and a < alpha)}
 
 
+def multiplicity_audit(df, roles, params, ctl=None):
+    from .. import datasets as ds
+    alpha = float(params.get("alpha", 0.05))
+    project_id = params.get("_project_id")
+    runs = db.query(
+        "SELECT id, test_id, created_at, status, dataset_sha FROM analysis_run "
+        "WHERE project_id IS ? ORDER BY created_at DESC LIMIT 500",
+        (project_id,))
+    by_ds = {}
+    for r in runs:
+        by_ds.setdefault(r["dataset_sha"], []).append(r)
+    blocks = []
+    for sha, rs in by_ds.items():
+        k = len([r for r in rs if r["status"] == "ok"])
+        fwer = 1 - (1 - alpha) ** k if k else 0
+        name = next((d["name"] for d in ds.list_datasets(project_id) if d["sha256"] == sha), sha)
+        blocks.append({"dataset": name, "sha": sha, "n_runs": k,
+                       "fwer": round(fwer, 4),
+                       "bonferroni_alpha": round(alpha / k, 6) if k else None,
+                       "tests": [r["test_id"] for r in rs[:40]]})
+    return {"kind": "audit", "alpha": alpha,
+            "blocks": sorted(blocks, key=lambda b: -b["n_runs"]),
+            "note": "Family-wise error rate if every test on a dataset were treated as "
+                    "one family at the nominal alpha. Not every run belongs to the same "
+                    "family, but the count is the honest starting point."}
+
+
+# ─── Categorical ─────────────────────────────────────────────────────────
+
 def _table(df, roles):
     r, c = _one(roles, "row"), _one(roles, "col")
     tab = pd.crosstab(df[r], df[c])
@@ -1099,6 +1129,209 @@ def goodness_fit(df, roles, params, ctl=None):
 
 # ─── Correlation and agreement ───────────────────────────────────────────
 
+def correlation(df, roles, params, ctl=None):
+    cols = roles.get("vars", [])
+    method = params.get("method", "pearson")
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    control = params.get("partial") or []
+    if control and method == "kendall":
+        raise ValueError("Partial Kendall correlation is not implemented; use Pearson or Spearman.")
+    sub = df[list(dict.fromkeys(cols + list(control)))].apply(pd.to_numeric, errors="coerce")
+
+    def residuals(y, controls):
+        X = np.column_stack([np.ones(len(controls))] +
+                            [controls[c].to_numpy(dtype=float) for c in control])
+        beta, *_ = np.linalg.lstsq(X, y.to_numpy(dtype=float), rcond=None)
+        return y.to_numpy(dtype=float) - X @ beta
+
+    rows = []
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            pair = sub[[cols[i], cols[j]] + list(control)].dropna()
+            if len(pair) < 3:
+                continue
+            x, y = pair[cols[i]], pair[cols[j]]
+            if control:
+                if method == "spearman":
+                    ranked = pair.rank(method="average")
+                    x = pd.Series(residuals(ranked[cols[i]], ranked))
+                    y = pd.Series(residuals(ranked[cols[j]], ranked))
+                    r, pval = stats.pearsonr(x, y)
+                    ci_method = "Fisher-z approximation to partial Spearman"
+                else:
+                    x = pd.Series(residuals(x, pair))
+                    y = pd.Series(residuals(y, pair))
+                    r, pval = stats.pearsonr(x, y)
+                    ci_method = "Fisher-z"
+            elif method == "spearman":
+                r, pval = stats.spearmanr(x, y)
+                ci_method = "Fisher-z approximation"
+            elif method == "kendall":
+                r, pval = stats.kendalltau(x, y)
+                ci_method = None
+            else:
+                r, pval = stats.pearsonr(x, y)
+                ci_method = "Fisher-z"
+            n = len(pair)
+            ci = None
+            if ci_method is not None:
+                zval = np.arctanh(max(-0.999999, min(0.999999, r)))
+                se = 1 / math.sqrt(max(1, n - 3 - len(control)))
+                zc = stats.norm.ppf(1 - (1 - level) / 2)
+                ci = [float(np.tanh(zval - zc * se)), float(np.tanh(zval + zc * se))]
+            rows.append({"a": cols[i], "b": cols[j], "n": n, "r": float(r),
+                         "p_raw": float(pval), "ci": ci, "ci_method": ci_method,
+                         "r_squared": float(r**2)})
+    adj = adjust_p([r["p_raw"] for r in rows], params.get("correction", "holm"))
+    for r, v in zip(rows, adj):
+        r["p"] = v
+    mat = None
+    if len(cols) > 2 and not control:
+        m = sub[cols].corr(method=method)
+        mat = {"labels": cols, "values": np.round(m.values, 4).tolist()}
+    return {"kind": "correlation", "method": method, "rows": rows, "matrix": mat,
+            "partial_on": list(control),
+            "sentence": (f"r = {rows[0]['r']:.2f}, {fmt_p(rows[0]['p'])}" if rows else "")}
+
+def icc(df, roles, params, ctl=None):
+    subj, rater, val = _one(roles, "subject"), _one(roles, "rater"), _one(roles, "value")
+    wide = df.pivot_table(index=subj, columns=rater, values=val, aggfunc="mean").dropna()
+    n, k = wide.shape
+    x = wide.values
+    grand = x.mean()
+    ms_r = k * ((x.mean(axis=1) - grand) ** 2).sum() / (n - 1)
+    ms_c = n * ((x.mean(axis=0) - grand) ** 2).sum() / (k - 1)
+    ms_e = ((x - x.mean(axis=1, keepdims=True) - x.mean(axis=0, keepdims=True)
+             + grand) ** 2).sum() / ((n - 1) * (k - 1))
+    ms_w = ((x - x.mean(axis=1, keepdims=True)) ** 2).sum() / (n * (k - 1))
+    forms = {
+        "ICC1": (ms_r - ms_w) / (ms_r + (k - 1) * ms_w),
+        "ICC2": (ms_r - ms_e) / (ms_r + (k - 1) * ms_e + k * (ms_c - ms_e) / n),
+        "ICC3": (ms_r - ms_e) / (ms_r + (k - 1) * ms_e),
+        "ICC1k": (ms_r - ms_w) / ms_r,
+        "ICC2k": (ms_r - ms_e) / (ms_r + (ms_c - ms_e) / n),
+        "ICC3k": (ms_r - ms_e) / ms_r,
+    }
+    chosen = params.get("form", "ICC2k")
+    v = float(forms.get(chosen, np.nan))
+    band = ("poor" if v < 0.5 else "moderate" if v < 0.75 else
+            "good" if v < 0.9 else "excellent")
+    return {"kind": "icc", "form": chosen, "value": v, "n_subjects": int(n),
+            "n_raters": int(k),
+            "all_forms": {k2: float(v2) for k2, v2 in forms.items()},
+            "interpretation": f"{band} reliability (Koo and Li bands)",
+            "note": "State the form in the manuscript. ICC alone is ambiguous."}
+
+
+def bland_altman(df, roles, params, ctl=None):
+    a_col, b_col = _one(roles, "a"), _one(roles, "b")
+    pair = df[[a_col, b_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    a, b = pair[a_col].values, pair[b_col].values
+    diff = a - b
+    mean = (a + b) / 2
+    bias = float(diff.mean())
+    sd = float(diff.std(ddof=1))
+    k = float(params.get("loa", 1.96))
+    n = len(diff)
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    t = stats.t.ppf(1 - (1 - level) / 2, n - 1)
+    se_bias = sd / math.sqrt(n)
+    se_loa = sd * math.sqrt(3 / n)
+    out = {"kind": "bland_altman", "n": n, "bias": bias, "sd_diff": sd,
+           "loa": [bias - k * sd, bias + k * sd],
+           "bias_ci": [bias - t * se_bias, bias + t * se_bias],
+           "loa_lower_ci": [bias - k * sd - t * se_loa, bias - k * sd + t * se_loa],
+           "loa_upper_ci": [bias + k * sd - t * se_loa, bias + k * sd + t * se_loa],
+           "means": mean.tolist()[:5000], "diffs": diff.tolist()[:5000],
+           "labels": [a_col, b_col]}
+    if params.get("proportional", True):
+        sl, ic, r, p, se = stats.linregress(mean, diff)
+        out["proportional_bias"] = {"slope": float(sl), "p": float(p),
+                                    "note": ("Difference varies with magnitude; "
+                                             "consider a ratio or log analysis."
+                                             if p < 0.05 else "No proportional bias.")}
+    return out
+
+
+def kappa(df, roles, params, ctl=None):
+    cols = roles.get("raters", [])
+    sub = df[cols].dropna()
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    if len(cols) == 2:
+        a, b = sub[cols[0]].astype(str), sub[cols[1]].astype(str)
+        cats = sorted(set(a) | set(b))
+        tab = pd.crosstab(a, b).reindex(index=cats, columns=cats, fill_value=0).values
+        n = tab.sum()
+        w = np.zeros_like(tab, dtype=float)
+        kind = params.get("weights", "none")
+        for i in range(len(cats)):
+            for j in range(len(cats)):
+                if kind == "linear":
+                    w[i, j] = 1 - abs(i - j) / (len(cats) - 1)
+                elif kind == "quadratic":
+                    w[i, j] = 1 - ((i - j) / (len(cats) - 1)) ** 2
+                else:
+                    w[i, j] = 1.0 if i == j else 0.0
+        po = (w * tab).sum() / n
+        rows_m = tab.sum(axis=1) / n
+        cols_m = tab.sum(axis=0) / n
+        pe = (w * np.outer(rows_m, cols_m)).sum()
+        kap = (po - pe) / (1 - pe) if pe != 1 else np.nan
+        se = math.sqrt(po * (1 - po) / (n * (1 - pe) ** 2)) if pe != 1 else np.nan
+        z = stats.norm.ppf(1 - (1 - level) / 2)
+        val, ci = float(kap), [float(kap - z * se), float(kap + z * se)]
+        which = f"Cohen's kappa ({kind} weights)" if kind != "none" else "Cohen's kappa"
+    else:
+        cats = sorted(set(sub.values.ravel().astype(str)))
+        n_sub, n_rat = sub.shape
+        counts = np.zeros((n_sub, len(cats)))
+        for i, (_, row) in enumerate(sub.iterrows()):
+            for v in row.astype(str):
+                counts[i, cats.index(v)] += 1
+        p_j = counts.sum(axis=0) / (n_sub * n_rat)
+        P_i = ((counts**2).sum(axis=1) - n_rat) / (n_rat * (n_rat - 1))
+        pbar = P_i.mean()
+        pe = (p_j**2).sum()
+        val = float((pbar - pe) / (1 - pe)) if pe != 1 else np.nan
+        ci = [None, None]
+        which = "Fleiss' kappa"
+    band = ("poor" if val < 0.2 else "fair" if val < 0.4 else "moderate" if val < 0.6
+            else "substantial" if val < 0.8 else "almost perfect")
+    return {"kind": "kappa", "test": which, "value": val, "ci": ci,
+            "n": int(len(sub)), "raters": cols,
+            "interpretation": f"{band} agreement (Landis and Koch bands)"}
+
+
+def cronbach(df, roles, params, ctl=None):
+    items = roles.get("items", [])
+    sub = df[items].apply(pd.to_numeric, errors="coerce").dropna()
+    k = len(items)
+    var_sum = sub.var(axis=0, ddof=1).sum()
+    var_tot = sub.sum(axis=1).var(ddof=1)
+    alpha = float(k / (k - 1) * (1 - var_sum / var_tot)) if var_tot else np.nan
+    n = len(sub)
+    level = float(params.get("ci", get("ci_level", 0.95)))
+    f1 = stats.f.ppf(1 - (1 - level) / 2, n - 1, (n - 1) * (k - 1))
+    f2 = stats.f.ppf((1 - level) / 2, n - 1, (n - 1) * (k - 1))
+    ci = [float(1 - (1 - alpha) * f1), float(1 - (1 - alpha) * f2)]
+    rows = []
+    if params.get("drop_stats", True):
+        for it in items:
+            rest = [i for i in items if i != it]
+            if len(rest) < 2:
+                continue
+            vs = sub[rest].var(axis=0, ddof=1).sum()
+            vt = sub[rest].sum(axis=1).var(ddof=1)
+            a2 = len(rest) / (len(rest) - 1) * (1 - vs / vt) if vt else np.nan
+            rows.append({"item": it, "alpha_if_dropped": float(a2),
+                         "item_total_r": float(sub[it].corr(sub[rest].sum(axis=1)))})
+    return {"kind": "reliability", "alpha": alpha, "ci": ci, "n": int(n),
+            "k_items": k, "items": rows,
+            "interpretation": ("questionable" if alpha < 0.7 else
+                               "acceptable" if alpha < 0.8 else
+                               "good" if alpha < 0.9 else
+                               "high, and possibly redundant items")}
+
 RUNNERS = {
     "describe": describe, "freq": freq,
     "crosstab": crosstab, "normality_check": normality_check,
@@ -1112,8 +1345,11 @@ RUNNERS = {
     "anova_factorial": anova_factorial, "welch_anova": welch_anova,
     "kruskal": kruskal, "friedman": friedman,
     "pairwise": pairwise, "padjust": padjust,
-    "chi2": chi2, "fisher": fisher,
-    "mcnemar": mcnemar, "cochran_q": cochran_q,
-    "armitage": armitage, "prop_test": prop_test,
-    "binomial": binomial, "goodness_fit": goodness_fit,
+    "multiplicity_audit": multiplicity_audit, "chi2": chi2,
+    "fisher": fisher, "mcnemar": mcnemar,
+    "cochran_q": cochran_q, "armitage": armitage,
+    "prop_test": prop_test, "binomial": binomial,
+    "goodness_fit": goodness_fit, "correlation": correlation,
+    "icc": icc, "bland_altman": bland_altman,
+    "kappa": kappa, "cronbach": cronbach,
 }
