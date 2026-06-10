@@ -9,8 +9,9 @@ from scipy import stats
 from ..config import get, have
 
 from ..stats_run import (
-    cles, cohen_d, cramers_v, d_ci,
-    fmt_p, hedges_g, hodges_lehmann, rank_biserial,
+    adjust_p, cles, cohen_d, cramers_v,
+    d_ci, epsilon_squared, eta_squared, fmt_p,
+    hedges_g, hodges_lehmann, omega_squared, rank_biserial,
 )
 
 
@@ -452,6 +453,385 @@ def bootstrap_diff(df, roles, params, ctl=None):
 
 # ─── Three or more groups ────────────────────────────────────────────────
 
+def _posthoc(df, dv, group, how, correction="holm", control=None):
+    """Run the named post-hoc procedure without silently substituting another.
+
+    Dunn is implemented from pooled ranks with the standard tie correction.
+    Dunnett delegates to SciPy's multivariate-t implementation and therefore
+    already controls the family-wise error rate.  Nemenyi for repeated
+    measures is handled in ``friedman`` below rather than here.
+    """
+    g = _groups(df, dv, group)
+    labels = [l for l, _ in g]
+    arrays = {l: np.asarray(a, dtype=float) for l, a in g}
+    if len(labels) < 2:
+        return [], "No pairwise comparisons"
+
+    # A control restriction is orthogonal to the chosen test.  Only Dunnett
+    # requires a control by definition; other tests can also be restricted to
+    # control-vs-treatment comparisons.
+    if control is not None:
+        control = str(control)
+        if control not in arrays:
+            raise ValueError(f"Control level {control!r} was not found in {group}.")
+        pairs = [(control, l) for l in labels if l != control]
+    else:
+        pairs = [(labels[i], labels[j])
+                 for i in range(len(labels)) for j in range(i + 1, len(labels))]
+
+    if how == "tukey":
+        if control is not None:
+            raise ValueError("Tukey HSD is an all-pairs procedure; use t/Welch/Dunn for control-only comparisons.")
+        res = stats.tukey_hsd(*[arrays[l] for l in labels])
+        rows = []
+        for i in range(len(labels)):
+            for j in range(i + 1, len(labels)):
+                a, b = arrays[labels[i]], arrays[labels[j]]
+                rows.append({"a": labels[i], "b": labels[j],
+                             "p_raw": float(res.pvalue[i, j]),
+                             "p": float(res.pvalue[i, j]),
+                             "mean_diff": float(np.mean(a) - np.mean(b)),
+                             "hedges_g": hedges_g(a, b)})
+        return rows, "Tukey HSD (family-wise error controlled)"
+
+    if how == "dunnett":
+        if control is None:
+            raise ValueError("Dunnett's test requires a control level.")
+        treatments = [l for l in labels if l != control]
+        if not treatments:
+            return [], "Dunnett's test"
+        res = stats.dunnett(*[arrays[l] for l in treatments],
+                            control=arrays[control], alternative="two-sided",
+                            random_state=get("seed", 0))
+        pvals = np.atleast_1d(res.pvalue)
+        rows = []
+        for l, pval in zip(treatments, pvals):
+            a, b = arrays[control], arrays[l]
+            rows.append({"a": control, "b": l, "p_raw": float(pval),
+                         "p": float(pval),
+                         "mean_diff": float(np.mean(a) - np.mean(b)),
+                         "hedges_g": hedges_g(a, b)})
+        return rows, "Dunnett's test versus control (family-wise error controlled)"
+
+    dunn_rank_means = None
+    dunn_var = None
+    if how == "dunn":
+        pooled = np.concatenate([arrays[l] for l in labels])
+        ranks = stats.rankdata(pooled, method="average")
+        N = len(pooled)
+        _, tie_counts = np.unique(pooled, return_counts=True)
+        tie_term = float(np.sum(tie_counts**3 - tie_counts))
+        dunn_var = N * (N + 1) / 12.0
+        if N > 1:
+            dunn_var -= tie_term / (12.0 * (N - 1))
+        dunn_rank_means = {}
+        pos = 0
+        for l in labels:
+            n = len(arrays[l])
+            dunn_rank_means[l] = float(np.mean(ranks[pos:pos+n]))
+            pos += n
+
+    # ``holm`` in the Welch-ANOVA registry means pairwise Welch tests with a
+    # Holm adjustment, not a distinct statistic named "holm".
+    if how == "holm":
+        how = "welch"
+        correction = "holm"
+
+    rows = []
+    for x, y in pairs:
+        a, b = arrays[x], arrays[y]
+        if how == "dunn":
+            se = math.sqrt(dunn_var * (1 / len(a) + 1 / len(b)))
+            zstat = ((dunn_rank_means[x] - dunn_rank_means[y]) / se
+                     if se else np.nan)
+            pval = 2 * stats.norm.sf(abs(zstat)) if zstat == zstat else np.nan
+        elif how == "mwu":
+            pval = float(stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
+        elif how == "games_howell":
+            n1, n2 = len(a), len(b)
+            v1, v2 = a.var(ddof=1), b.var(ddof=1)
+            se = math.sqrt(v1 / n1 + v2 / n2)
+            t = (a.mean() - b.mean()) / se if se else np.nan
+            den = ((v1 / n1) ** 2 / (n1 - 1) + (v2 / n2) ** 2 / (n2 - 1))
+            dof = ((v1 / n1 + v2 / n2) ** 2 / den) if den else np.inf
+            q = abs(t) * math.sqrt(2)
+            pval = float(stats.studentized_range.sf(q, len(labels), dof))
+        elif how in ("t", "welch"):
+            pval = float(stats.ttest_ind(a, b, equal_var=(how == "t")).pvalue)
+        else:
+            raise ValueError(f"Unsupported post-hoc procedure {how!r}.")
+        rows.append({"a": x, "b": y, "p_raw": float(pval),
+                     "mean_diff": float(np.mean(a) - np.mean(b)),
+                     "hedges_g": hedges_g(a, b)})
+
+    if how == "games_howell":
+        for r in rows:
+            r["p"] = r["p_raw"]
+        return rows, "Games-Howell (family-wise error controlled)"
+
+    adj = adjust_p([r["p_raw"] for r in rows], correction)
+    for r, v in zip(rows, adj):
+        r["p"] = v
+    names = {"dunn": "Dunn", "mwu": "Mann-Whitney U",
+             "welch": "pairwise Welch t", "t": "pairwise t"}
+    return rows, f"{names.get(how, how)} with {correction} correction"
+
+def anova_factorial(df, roles, params, ctl=None):
+    """Factorial OLS ANOVA using the factors declared by the registry."""
+    if not have("statsmodels"):
+        raise ValueError("Factorial ANOVA needs statsmodels.")
+    import statsmodels.api as sm
+    import statsmodels.formula.api as smf
+
+    dv = _one(roles, "dv")
+    factors = roles.get("factors", [])
+    if len(factors) < 2:
+        raise ValueError("Factorial ANOVA needs at least two factors.")
+    cols = [dv] + factors
+    sub = df[cols].copy()
+    sub[dv] = pd.to_numeric(sub[dv], errors="coerce")
+    sub = sub.dropna()
+    if len(sub) <= len(factors) + 1:
+        raise ValueError("Too few complete observations for factorial ANOVA.")
+
+    qdv = f'Q("{dv}")'
+    terms = [f'C(Q("{f}"))' for f in factors]
+    rhs = " * ".join(terms) if params.get("interactions", True) else " + ".join(terms)
+    model = smf.ols(f"{qdv} ~ {rhs}", data=sub).fit()
+    typ = int(params.get("ss_type", 2))
+    table = sm.stats.anova_lm(model, typ=typ)
+    resid_ss = float(table.loc["Residual", "sum_sq"])
+    rows = []
+    for term, r in table.iterrows():
+        if term == "Residual":
+            rows.append({"source": "Residual", "ss": resid_ss,
+                         "df": float(r["df"]), "ms": float(resid_ss / r["df"])})
+            continue
+        ss = float(r["sum_sq"])
+        effect = ss / (ss + resid_ss) if ss + resid_ss else np.nan
+        rows.append({"source": str(term), "ss": ss, "df": float(r["df"]),
+                     "F": float(r["F"]), "p": float(r["PR(>F)"]),
+                     "partial_eta_squared": float(effect)})
+
+    # Plot-facing summaries use observed cells; they do not replace the model.
+    cell = sub.groupby(factors, observed=True)[dv].agg(["mean", "std", "count"]).reset_index()
+    cells = []
+    for _, r in cell.iterrows():
+        label = " × ".join(f"{f}={r[f]}" for f in factors)
+        cells.append({"level": label, "mean": float(r["mean"]),
+                      "sd": None if pd.isna(r["std"]) else float(r["std"]),
+                      "n": int(r["count"])})
+    pvals = [r.get("p") for r in rows if r.get("p") is not None]
+    out = {"kind": "anova", "test": f"Factorial ANOVA (Type {typ} SS)",
+           "dv": dv, "factors": factors, "n": int(len(sub)), "table": rows,
+           "levels": [c["level"] for c in cells],
+           "mean": [c["mean"] for c in cells],
+           "sd": [c["sd"] for c in cells], "n_cells": [c["n"] for c in cells],
+           "p": min(pvals) if pvals else None,
+           "sentence": f"Factorial ANOVA fitted to {len(sub)} complete observations; see the term table for main effects and interactions."}
+    posthoc = params.get("posthoc", "none")
+    if posthoc != "none":
+        tmp = sub.copy()
+        tmp["__cell__"] = tmp[factors].astype(str).agg(" × ".join, axis=1)
+        how = "tukey" if posthoc == "tukey" else "t"
+        correction = posthoc if posthoc in ("holm", "bonferroni") else "holm"
+        comps, label = _posthoc(tmp, dv, "__cell__", how, correction)
+        out["comparisons"] = comps
+        out["posthoc_label"] = label + " across observed factor combinations"
+    return out
+
+def anova_oneway(df, roles, params, ctl=None):
+    dv, group = _one(roles, "dv"), _one(roles, "group")
+    g = _groups(df, dv, group)
+    arrays = [a for _, a in g]
+    labels = [l for l, _ in g]
+    if params.get("welch"):
+        return welch_anova(df, roles, params, ctl)
+    st = stats.f_oneway(*arrays)
+    grand = np.concatenate(arrays)
+    ss_b = sum(len(a) * (a.mean() - grand.mean()) ** 2 for a in arrays)
+    ss_w = sum(((a - a.mean()) ** 2).sum() for a in arrays)
+    ss_t = ss_b + ss_w
+    df_b = len(arrays) - 1
+    df_w = len(grand) - len(arrays)
+    ms_w = ss_w / df_w if df_w else np.nan
+    res = {"kind": "anova", "test": "One-way ANOVA", "dv": dv, "factor": group,
+           "levels": labels, "n": [len(a) for a in arrays],
+           "mean": [float(a.mean()) for a in arrays],
+           "sd": [float(a.std(ddof=1)) for a in arrays],
+           "sem": [float(a.std(ddof=1) / math.sqrt(len(a))) for a in arrays],
+           "statistic": float(st.statistic), "df": [df_b, df_w], "p": float(st.pvalue),
+           "table": [{"source": group, "ss": float(ss_b), "df": df_b,
+                      "ms": float(ss_b / df_b), "F": float(st.statistic),
+                      "p": float(st.pvalue)},
+                     {"source": "Residual", "ss": float(ss_w), "df": df_w,
+                      "ms": float(ms_w)}],
+           "effects": {"eta_squared": eta_squared(ss_b, ss_t),
+                       "omega_squared": omega_squared(ss_b, ss_w, df_b, ms_w, len(grand))},
+           "sentence": f"F({df_b}, {df_w}) = {st.statistic:.2f}, {fmt_p(st.pvalue)}"}
+    if params.get("posthoc", "tukey") != "none":
+        posthoc = params.get("posthoc", "tukey")
+        how = "t" if posthoc in ("holm", "bonferroni") else posthoc
+        correction = posthoc if posthoc in ("holm", "bonferroni") else params.get("correction", "holm")
+        rows, label = _posthoc(df, dv, group, how, correction, params.get("control"))
+        res["comparisons"] = rows
+        res["posthoc_label"] = label
+    return res
+
+
+def welch_anova(df, roles, params, ctl=None):
+    dv, group = _one(roles, "dv"), _one(roles, "group")
+    g = _groups(df, dv, group)
+    labels = [l for l, _ in g]
+    arrays = [a for _, a in g]
+    k = len(arrays)
+    w = np.array([len(a) / a.var(ddof=1) for a in arrays])
+    m = np.array([a.mean() for a in arrays])
+    n = np.array([len(a) for a in arrays])
+    mw = (w * m).sum() / w.sum()
+    A_ = ((w * (m - mw) ** 2).sum()) / (k - 1)
+    lam = ((1 - w / w.sum()) ** 2 / (n - 1)).sum()
+    B = 1 + 2 * (k - 2) / (k**2 - 1) * lam
+    F = A_ / B
+    df1 = k - 1
+    df2 = (k**2 - 1) / (3 * lam)
+    p = float(stats.f.sf(F, df1, df2))
+    res = {"kind": "anova", "test": "Welch's ANOVA", "dv": dv, "factor": group,
+           "levels": labels, "n": n.tolist(),
+           "mean": m.tolist(),
+           "sd": [float(a.std(ddof=1)) for a in arrays],
+           "sem": [float(a.std(ddof=1) / math.sqrt(len(a))) for a in arrays],
+           "statistic": float(F), "df": [df1, float(df2)], "p": p,
+           "sentence": f"F({df1}, {df2:.1f}) = {F:.2f}, {fmt_p(p)}"}
+    if params.get("posthoc", "games_howell") != "none":
+        how = params.get("posthoc", "games_howell")
+        if how == "holm":
+            how = "welch"
+        rows, label = _posthoc(df, dv, group, how, params.get("correction", "holm"))
+        res["comparisons"] = rows
+        res["posthoc_label"] = label
+    return res
+
+
+def kruskal(df, roles, params, ctl=None):
+    dv, group = _one(roles, "dv"), _one(roles, "group")
+    g = _groups(df, dv, group)
+    arrays = [a for _, a in g]
+    labels = [l for l, _ in g]
+    st = stats.kruskal(*arrays)
+    n = sum(len(a) for a in arrays)
+    res = {"kind": "anova", "test": "Kruskal-Wallis", "dv": dv, "factor": group,
+           "levels": labels, "n": [len(a) for a in arrays],
+           "median": [float(np.median(a)) for a in arrays],
+           "iqr": [[float(np.percentile(a, 25)), float(np.percentile(a, 75))] for a in arrays],
+           "statistic": float(st.statistic), "df": [len(arrays) - 1], "p": float(st.pvalue),
+           "effects": {"epsilon_squared": epsilon_squared(st.statistic, n),
+                       "eta_squared_h": float((st.statistic - len(arrays) + 1) /
+                                              (n - len(arrays)))},
+           "sentence": f"H({len(arrays)-1}) = {st.statistic:.2f}, {fmt_p(st.pvalue)}"}
+    if params.get("posthoc", "dunn") != "none":
+        rows, label = _posthoc(df, dv, group, params["posthoc"],
+                               params.get("correction", "holm"))
+        res["comparisons"] = rows
+        res["posthoc_label"] = label
+    return res
+
+
+def friedman(df, roles, params, ctl=None):
+    dv, subj, within = _one(roles, "dv"), _one(roles, "subject"), _one(roles, "within")
+    wide = df.pivot_table(index=subj, columns=within, values=dv, aggfunc="mean").dropna()
+    conds = [pd.to_numeric(wide[c], errors="coerce").values for c in wide.columns]
+    if len(conds) < 3 or len(wide) < 2:
+        raise ValueError("Friedman needs at least three conditions and two complete subjects.")
+    st = stats.friedmanchisquare(*conds)
+    k = len(conds)
+    n = len(wide)
+    W = float(st.statistic / (n * (k - 1))) if n and k > 1 else np.nan
+    res = {"kind": "anova", "test": "Friedman", "dv": dv, "factor": within,
+           "levels": [str(c) for c in wide.columns], "n": [n] * k,
+           "median": [float(np.median(c)) for c in conds],
+           "statistic": float(st.statistic), "df": [k - 1], "p": float(st.pvalue),
+           "effects": {"kendalls_w": W},
+           "sentence": f"χ²({k-1}) = {st.statistic:.2f}, {fmt_p(st.pvalue)}, W = {W:.2f}"}
+    posthoc = params.get("posthoc", "wilcoxon_holm")
+    if posthoc == "nemenyi":
+        # Nemenyi's post-Friedman test works on mean within-subject ranks and
+        # uses the studentized-range distribution; no extra p adjustment is
+        # applied because the procedure is already an all-pairs family test.
+        rank_rows = np.apply_along_axis(stats.rankdata, 1, wide.values)
+        mean_ranks = rank_rows.mean(axis=0)
+        denom = math.sqrt(k * (k + 1) / (12.0 * n))
+        rows = []
+        cols = list(wide.columns)
+        for i in range(k):
+            for j in range(i + 1, k):
+                q = abs(mean_ranks[i] - mean_ranks[j]) / denom if denom else np.nan
+                pval = float(stats.studentized_range.sf(q, k, np.inf))
+                rows.append({"a": str(cols[i]), "b": str(cols[j]),
+                             "mean_rank_diff": float(mean_ranks[i] - mean_ranks[j]),
+                             "p_raw": pval, "p": pval})
+        res["comparisons"] = rows
+        res["posthoc_label"] = "Nemenyi post-Friedman (family-wise error controlled)"
+    elif posthoc == "wilcoxon_holm":
+        rows = []
+        cols = list(wide.columns)
+        for i in range(k):
+            for j in range(i + 1, k):
+                pval = float(stats.wilcoxon(conds[i], conds[j]).pvalue)
+                rows.append({"a": str(cols[i]), "b": str(cols[j]), "p_raw": pval})
+        adj = adjust_p([r["p_raw"] for r in rows], "holm")
+        for r, v in zip(rows, adj):
+            r["p"] = v
+        res["comparisons"] = rows
+        res["posthoc_label"] = "Pairwise Wilcoxon with Holm correction"
+    elif posthoc != "none":
+        raise ValueError(f"Unsupported Friedman post-hoc procedure {posthoc!r}.")
+    return res
+
+def pairwise(df, roles, params, ctl=None):
+    dv, group = _one(roles, "dv"), _one(roles, "group")
+    how = params.get("test", "t")
+    control = params.get("control") if params.get("against") == "control" else None
+    # Restricting comparisons to a control must not change the selected
+    # statistic. Dunnett is offered explicitly by the one-way ANOVA workflow;
+    # this generic pairwise tool runs exactly the test named in its selector.
+    rows, label = _posthoc(df, dv, group, how,
+                           params.get("correction", "holm"), control)
+    groups = _groups(df, dv, group)
+    return {"kind": "pairwise", "dv": dv, "factor": group,
+            "comparisons": rows, "posthoc_label": label,
+            "levels": [l for l, _ in groups],
+            "mean": [float(a.mean()) for _, a in groups],
+            "sem": [float(a.std(ddof=1) / math.sqrt(len(a))) for _, a in groups],
+            "n": [len(a) for _, a in groups]}
+
+def padjust(df, roles, params, ctl=None):
+    vals, labels = [], []
+    col = (roles.get("pvals") or [None])[0]
+    if col and df is not None:
+        s = pd.to_numeric(df[col], errors="coerce").dropna()
+        vals = s.tolist()
+        labels = [str(i) for i in s.index]
+    elif params.get("paste"):
+        for tok in str(params["paste"]).replace("\n", ",").split(","):
+            tok = tok.strip()
+            if tok:
+                try:
+                    vals.append(float(tok))
+                    labels.append(tok)
+                except ValueError:
+                    pass
+    adj = adjust_p(vals, params.get("correction", "holm"))
+    alpha = float(params.get("alpha", 0.05))
+    return {"kind": "padjust", "method": params.get("correction"),
+            "alpha": alpha,
+            "rows": [{"label": l, "p_raw": v, "p_adj": a,
+                      "significant_raw": v < alpha, "significant_adj": a < alpha}
+                     for l, v, a in zip(labels, vals, adj)],
+            "n_raw_sig": sum(1 for v in vals if v < alpha),
+            "n_adj_sig": sum(1 for a in adj if a is not None and a < alpha)}
+
+
 def _table(df, roles):
     r, c = _one(roles, "row"), _one(roles, "col")
     tab = pd.crosstab(df[r], df[c])
@@ -495,5 +875,9 @@ RUNNERS = {
     "ttest_1samp": ttest_1samp, "mannwhitney": mannwhitney,
     "wilcoxon": wilcoxon, "wilcoxon_1samp": wilcoxon_1samp,
     "brunner_munzel": brunner_munzel, "permutation_two": permutation_two,
-    "bootstrap_diff": bootstrap_diff, "chi2": chi2,
+    "bootstrap_diff": bootstrap_diff, "anova_oneway": anova_oneway,
+    "anova_factorial": anova_factorial, "welch_anova": welch_anova,
+    "kruskal": kruskal, "friedman": friedman,
+    "pairwise": pairwise, "padjust": padjust,
+    "chi2": chi2,
 }
