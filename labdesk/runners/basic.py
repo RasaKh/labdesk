@@ -8,12 +8,9 @@ from scipy import stats
 
 from .. import db
 from ..config import get, have
-
-from ..stats_run import (
-    adjust_p, cles, cohen_d, cramers_v,
-    d_ci, epsilon_squared, eta_squared, fmt_p,
-    hedges_g, hodges_lehmann, omega_squared, rank_biserial,
-)
+from ..stats_run import (adjust_p, cles, cohen_d, cramers_v, d_ci, epsilon_squared,
+                         eta_squared, fmt_p, hedges_g, hodges_lehmann,
+                         omega_squared, rank_biserial)
 
 
 def _one(roles, key):
@@ -126,6 +123,120 @@ def crosstab(df, roles, params, ctl=None):
         out["p"] = float(p)
     return out
 
+
+def table1(df, roles, params, ctl=None):
+    """Baseline characteristics with per-variable test selection and SMD."""
+    cols = roles.get("vars", [])
+    group = _one(roles, "group")
+    nonnormal = set(params.get("nonnormal") or [])
+    digits = int(params.get("digits", 1))
+    levels = [str(x) for x in df[group].dropna().unique()] if group else []
+    rows = []
+
+    def num_cell(s):
+        n = pd.to_numeric(s, errors="coerce").dropna()
+        if not len(n):
+            return "-"
+        return f"{n.median():.{digits}f} ({n.quantile(.25):.{digits}f}-{n.quantile(.75):.{digits}f})"
+
+    for c in cols:
+        s = df[c]
+        is_num = pd.api.types.is_numeric_dtype(s) and s.nunique() > 6
+        use_median = c in nonnormal
+        if is_num and not use_median and len(s.dropna()) >= 3:
+            try:
+                use_median = stats.shapiro(pd.to_numeric(s, errors="coerce")
+                                           .dropna().head(5000)).pvalue < 0.05
+            except Exception:
+                use_median = False
+
+        row = {"variable": c, "type": "continuous" if is_num else "categorical",
+               "summary": "median (IQR)" if (is_num and use_median) else
+                          ("mean (SD)" if is_num else "n (%)"),
+               "missing": int(s.isna().sum()), "cells": {}}
+
+        if is_num:
+            if params.get("overall", True):
+                n = pd.to_numeric(s, errors="coerce").dropna()
+                row["cells"]["Overall"] = (num_cell(s) if use_median else
+                                           f"{n.mean():.{digits}f} ({n.std(ddof=1):.{digits}f})")
+            if group:
+                arrs = []
+                for lvl in levels:
+                    sub = pd.to_numeric(df.loc[df[group].astype(str) == lvl, c],
+                                        errors="coerce").dropna()
+                    arrs.append(sub.values)
+                    row["cells"][lvl] = (
+                        f"{np.median(sub):.{digits}f} ({np.percentile(sub,25):.{digits}f}-"
+                        f"{np.percentile(sub,75):.{digits}f})" if use_median and len(sub)
+                        else (f"{sub.mean():.{digits}f} ({sub.std(ddof=1):.{digits}f})"
+                              if len(sub) > 1 else "-"))
+                arrs = [a for a in arrs if len(a) > 1]
+                if params.get("show_p", True) and len(arrs) >= 2:
+                    if use_median:
+                        st = (stats.mannwhitneyu(*arrs) if len(arrs) == 2
+                              else stats.kruskal(*arrs))
+                        row["test"] = "Mann-Whitney" if len(arrs) == 2 else "Kruskal-Wallis"
+                    else:
+                        st = (stats.ttest_ind(*arrs, equal_var=False) if len(arrs) == 2
+                              else stats.f_oneway(*arrs))
+                        row["test"] = "Welch t" if len(arrs) == 2 else "ANOVA"
+                    row["p"] = float(st.pvalue)
+                if params.get("show_smd", True) and len(arrs) == 2:
+                    a, b = arrs
+                    sp = math.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2)
+                    row["smd"] = float(abs(a.mean() - b.mean()) / sp) if sp else None
+        else:
+            counts_all = s.value_counts()
+            sub_rows = []
+            for lvl_v in counts_all.index:
+                cell = {"level": str(lvl_v), "cells": {}}
+                if params.get("overall", True):
+                    n = int(counts_all[lvl_v])
+                    cell["cells"]["Overall"] = f"{n} ({100*n/counts_all.sum():.{digits}f})"
+                if group:
+                    for lvl in levels:
+                        sel = df[df[group].astype(str) == lvl][c]
+                        n = int((sel == lvl_v).sum())
+                        den = int(sel.notna().sum())
+                        cell["cells"][lvl] = f"{n} ({100*n/den:.{digits}f})" if den else "-"
+                sub_rows.append(cell)
+            row["sub_rows"] = sub_rows
+            if group and params.get("show_p", True):
+                tab = pd.crosstab(df[c], df[group])
+                if tab.size and tab.values.min() >= 0:
+                    _, _, _, exp = stats.chi2_contingency(tab.values)
+                    want_fisher = (params.get("cat_test") == "fisher" or
+                                   (params.get("cat_test", "auto") == "auto" and
+                                    (exp < 5).mean() > 0.2))
+                    if want_fisher and tab.shape == (2, 2):
+                        _, p = stats.fisher_exact(tab.values)
+                        row["test"] = "Fisher exact"
+                    else:
+                        chi2, p, _, _ = stats.chi2_contingency(tab.values)
+                        row["test"] = "Chi-square"
+                    row["p"] = float(p)
+                if params.get("show_smd", True) and len(levels) == 2 and tab.shape[0] == 2:
+                    p1 = tab.iloc[1, 0] / max(1, tab.iloc[:, 0].sum())
+                    p2 = tab.iloc[1, 1] / max(1, tab.iloc[:, 1].sum())
+                    den = math.sqrt((p1 * (1 - p1) + p2 * (1 - p2)) / 2)
+                    row["smd"] = float(abs(p1 - p2) / den) if den else None
+        rows.append(row)
+
+    header = (["Overall"] if params.get("overall", True) else []) + levels
+    ns = {}
+    if params.get("overall", True):
+        ns["Overall"] = int(len(df))
+    for lvl in levels:
+        ns[lvl] = int((df[group].astype(str) == lvl).sum())
+    return {"kind": "table1", "header": header, "n": ns, "rows": rows,
+            "group": group,
+            "footnote": "Continuous variables summarised as mean (SD) unless the "
+                        "distribution failed a normality check, in which case median "
+                        "(IQR) is shown and a rank test used."}
+
+
+# ─── Assumption panes ────────────────────────────────────────────────────
 
 def normality_check(df, roles, params, ctl=None):
     method = params.get("method", "shapiro")
@@ -1332,24 +1443,98 @@ def cronbach(df, roles, params, ctl=None):
                                "good" if alpha < 0.9 else
                                "high, and possibly redundant items")}
 
+
+def anova_rm(df, roles, params, ctl=None):
+    import pingouin as pg
+    dv, subject, within = _one(roles, "dv"), _one(roles, "subject"), _one(roles, "within")
+    d = pd.DataFrame({"y": pd.to_numeric(df[dv], errors="coerce"),
+                      "s": df[subject], "w": df[within]}).dropna()
+    d["w"] = d["w"].astype(str)
+    levels = sorted(d["w"].unique())
+    if len(levels) < 2:
+        raise ValueError(f"{within} needs at least two conditions.")
+    dup = d.duplicated(["s", "w"]).sum()
+    if dup:
+        raise ValueError(f"{int(dup)} subject-by-condition cells have more than one row. "
+                         "Average the repeats first, or the design has another factor.")
+    complete = d.groupby("s")["w"].nunique()
+    full = complete[complete == len(levels)].index
+    dropped = int(len(complete) - len(full))
+    d = d[d["s"].isin(full)]
+    if len(full) < 3:
+        raise ValueError("Fewer than three subjects have every condition.")
+
+    tab = pg.rm_anova(d, dv="y", within="w", subject="s", correction=True, detailed=True)
+    eff, err = tab.iloc[0], tab.iloc[1]
+    F, df1, df2 = float(eff["F"]), int(eff["DF"]), int(err["DF"])
+    p_unc, eps_gg = float(eff["p_unc"]), float(eff["eps"]) if "eps" in eff else 1.0
+    p_gg = float(eff["p_GG_corr"]) if "p_GG_corr" in eff and not pd.isna(eff["p_GG_corr"]) else p_unc
+    spher = bool(eff["sphericity"]) if "sphericity" in eff and not pd.isna(eff["sphericity"]) else True
+    w_spher = None if pd.isna(eff.get("W_spher", np.nan)) else float(eff["W_spher"])
+    p_spher = None if pd.isna(eff.get("p_spher", np.nan)) else float(eff["p_spher"])
+    eps_hf = float(pg.epsilon(d, dv="y", within="w", subject="s", correction="hf"))
+    p_hf = float(stats.f.sf(F, df1 * min(1.0, eps_hf), df2 * min(1.0, eps_hf)))
+
+    choice = params.get("correction", "auto")
+    if choice == "auto":
+        choice = "none" if spher else "gg"
+    eps, p = {"none": (1.0, p_unc), "gg": (eps_gg, p_gg), "hf": (min(1.0, eps_hf), p_hf)}[choice]
+    ss_eff, ss_err = float(eff["SS"]), float(err["SS"])
+    wide = d.pivot(index="s", columns="w", values="y")[levels]
+    res = {"kind": "anova", "test": "Repeated-measures ANOVA", "dv": dv,
+           "factor": within, "subject": subject, "levels": levels,
+           "n": [int(wide[l].count()) for l in levels],
+           "mean": [float(wide[l].mean()) for l in levels],
+           "sd": [float(wide[l].std(ddof=1)) for l in levels],
+           "sem": [float(wide[l].std(ddof=1) / math.sqrt(len(wide))) for l in levels],
+           "n_subjects": int(len(wide)), "n_dropped_subjects": dropped,
+           "statistic": F, "df": [df1 * eps, df2 * eps] if eps != 1.0 else [df1, df2], "p": p,
+           "correction": {"none": "None", "gg": "Greenhouse-Geisser",
+                          "hf": "Huynh-Feldt"}[choice],
+           "epsilon": {"greenhouse_geisser": eps_gg, "huynh_feldt": eps_hf},
+           "sphericity": {"holds": spher, "mauchly_W": w_spher, "p": p_spher},
+           "p_uncorrected": p_unc, "p_greenhouse_geisser": p_gg, "p_huynh_feldt": p_hf,
+           "table": [{"source": within, "ss": ss_eff, "df": df1, "ms": float(eff["MS"]),
+                      "F": F, "p": p_unc},
+                     {"source": "Error", "ss": ss_err, "df": df2, "ms": float(err["MS"])}],
+           "effects": {"partial_eta_squared": ss_eff / (ss_eff + ss_err),
+                       "generalized_eta_squared": float(eff["ng2"])}}
+    if dropped:
+        res["warning"] = (f"{dropped} subject(s) lacked at least one condition and were "
+                          "excluded (complete cases only).")
+    dfs = res["df"]
+    fmt_df = lambda v: f"{v:.2f}" if abs(v - round(v)) > 1e-9 else str(int(round(v)))
+    res["sentence"] = (f"F({fmt_df(dfs[0])}, {fmt_df(dfs[1])}) = {F:.2f}, {fmt_p(p)}"
+                       + ("" if choice == "none" else f" ({res['correction']} corrected)"))
+    posthoc = params.get("posthoc", "holm")
+    if posthoc != "none" and len(levels) > 2:
+        pad = {"holm": "holm", "bonferroni": "bonf"}[posthoc]
+        pw = pg.pairwise_tests(d, dv="y", within="w", subject="s", padjust=pad)
+        res["comparisons"] = [{"a": str(r["A"]), "b": str(r["B"]),
+                               "mean_diff": float(wide[str(r["A"])].mean() - wide[str(r["B"])].mean()),
+                               "hedges_g": float(r["hedges"]), "p_raw": float(r["p_unc"]),
+                               "p": float(r["p_corr"])} for _, r in pw.iterrows()]
+        res["posthoc_label"] = f"Paired t-tests, {posthoc.title()} adjusted"
+    return res
+
+
 RUNNERS = {
-    "describe": describe, "freq": freq,
-    "crosstab": crosstab, "normality_check": normality_check,
-    "variance_check": variance_check, "outlier_check": outlier_check,
-    "missing_check": missing_check, "power_achieved": power_achieved,
-    "ttest_ind": ttest_ind, "ttest_paired": ttest_paired,
-    "ttest_1samp": ttest_1samp, "mannwhitney": mannwhitney,
-    "wilcoxon": wilcoxon, "wilcoxon_1samp": wilcoxon_1samp,
+    "anova_rm": anova_rm,
+    "describe": describe, "freq": freq, "crosstab": crosstab, "table1": table1,
+    "normality_check": normality_check, "variance_check": variance_check,
+    "outlier_check": outlier_check, "missing_check": missing_check,
+    "power_achieved": power_achieved,
+    "ttest_ind": ttest_ind, "ttest_paired": ttest_paired, "ttest_1samp": ttest_1samp,
+    "mannwhitney": mannwhitney, "wilcoxon": wilcoxon, "wilcoxon_1samp": wilcoxon_1samp,
     "brunner_munzel": brunner_munzel, "permutation_two": permutation_two,
-    "bootstrap_diff": bootstrap_diff, "anova_oneway": anova_oneway,
-    "anova_factorial": anova_factorial, "welch_anova": welch_anova,
-    "kruskal": kruskal, "friedman": friedman,
-    "pairwise": pairwise, "padjust": padjust,
-    "multiplicity_audit": multiplicity_audit, "chi2": chi2,
-    "fisher": fisher, "mcnemar": mcnemar,
-    "cochran_q": cochran_q, "armitage": armitage,
-    "prop_test": prop_test, "binomial": binomial,
-    "goodness_fit": goodness_fit, "correlation": correlation,
-    "icc": icc, "bland_altman": bland_altman,
+    "bootstrap_diff": bootstrap_diff,
+    "anova_oneway": anova_oneway, "anova_factorial": anova_factorial,
+    "welch_anova": welch_anova, "kruskal": kruskal,
+    "friedman": friedman, "pairwise": pairwise, "padjust": padjust,
+    "multiplicity_audit": multiplicity_audit,
+    "chi2": chi2, "fisher": fisher, "mcnemar": mcnemar, "cochran_q": cochran_q,
+    "armitage": armitage, "prop_test": prop_test, "binomial": binomial,
+    "goodness_fit": goodness_fit,
+    "correlation": correlation, "icc": icc, "bland_altman": bland_altman,
     "kappa": kappa, "cronbach": cronbach,
 }
