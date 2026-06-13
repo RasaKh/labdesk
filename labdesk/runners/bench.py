@@ -5,6 +5,7 @@ import math
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.optimize import curve_fit
 
 from ..config import get, have
 from ..stats_run import cohen_d, fmt_p
@@ -222,6 +223,227 @@ def qpcr(df, roles, params, ctl=None):
 
 # ─── ELISA ───────────────────────────────────────────────────────────────
 
+def _fourpl(x, a, b, c, d):
+    return d + (a - d) / (1 + (x / c) ** b)
+
+
+def _fivepl(x, a, b, c, d, g):
+    return d + (a - d) / (1 + (x / c) ** b) ** g
+
+
+def elisa(df, roles, params, ctl=None):
+    od_c = _one(roles, "od"); conc_c = _one(roles, "conc")
+    type_c = _one(roles, "sample_type"); well_c = _one(roles, "well")
+    d = df.copy()
+    d[od_c] = pd.to_numeric(d[od_c], errors="coerce")
+    if conc_c:
+        d[conc_c] = pd.to_numeric(d[conc_c], errors="coerce")
+
+    if type_c:
+        # Do not use startswith("s"): common labels such as "sample" would be
+        # silently classified as standards.  Accept explicit standard labels.
+        typ = d[type_c].astype(str).str.strip().str.lower()
+        is_std = typ.isin({"standard", "standards", "std", "calibrator", "cal", "standard curve"})
+        std = d[is_std]
+        unk = d[~is_std]
+        if std.empty and conc_c:
+            # Concentration is the authoritative fallback when labels are custom.
+            std = d[d[conc_c].notna()]
+            unk = d[d[conc_c].isna()]
+    elif conc_c:
+        std = d[d[conc_c].notna()]
+        unk = d[d[conc_c].isna()]
+    else:
+        raise ValueError("Provide either standard concentrations or a sample-type column.")
+    if not conc_c:
+        raise ValueError("A standard-concentration column is required to fit an ELISA curve.")
+
+    model = params.get("model", "4pl")
+    if model not in {"4pl", "5pl", "linear", "loglinear"}:
+        raise ValueError(f"Unsupported ELISA curve model: {model!r}")
+    sx = pd.to_numeric(std[conc_c], errors="coerce").to_numpy(float)
+    sy = pd.to_numeric(std[od_c], errors="coerce").to_numpy(float)
+    ok = np.isfinite(sx) & np.isfinite(sy) & (sx > 0)
+    sx, sy = sx[ok], sy[ok]
+    min_distinct = {"linear": 2, "loglinear": 2, "4pl": 4, "5pl": 5}[model]
+    if len(np.unique(sx)) < min_distinct:
+        raise ValueError(f"{model.upper()} needs at least {min_distinct} distinct positive standard concentrations.")
+
+    weight = params.get("weighting", "1/y2")
+    # scipy.optimize.curve_fit minimises sum((residual/sigma)^2).  Therefore
+    # a desired 1/y weight corresponds to sigma=sqrt(|y|), and 1/y² to sigma=|y|.
+    sigma = None
+    abs_y = np.maximum(np.abs(sy), 1e-8)
+    if weight == "1/y":
+        sigma = np.sqrt(abs_y)
+    elif weight == "1/y2":
+        sigma = abs_y
+    elif weight != "none":
+        raise ValueError(f"Unsupported ELISA weighting: {weight!r}")
+
+    def linear(x, m, b):
+        return m * x + b
+
+    def loglinear(x, m, b):
+        return m * np.log10(x) + b
+
+    if model == "linear":
+        fn = linear
+        m0, b0 = np.polyfit(sx, sy, 1)
+        p0 = [float(m0), float(b0)]
+    elif model == "loglinear":
+        fn = loglinear
+        m0, b0 = np.polyfit(np.log10(sx), sy, 1)
+        p0 = [float(m0), float(b0)]
+    elif model == "5pl":
+        fn = _fivepl
+        p0 = [float(sy.min()), 1.0, float(np.median(sx)), float(sy.max()), 1.0]
+    else:
+        fn = _fourpl
+        p0 = [float(sy.min()), 1.0, float(np.median(sx)), float(sy.max())]
+
+    popt, pcov = curve_fit(fn, sx, sy, p0=p0, sigma=sigma, maxfev=200000,
+                           absolute_sigma=False)
+    pred = np.asarray(fn(sx, *popt), float)
+    ss_res = float(np.sum((sy - pred) ** 2))
+    ss_tot = float(np.sum((sy - sy.mean()) ** 2))
+    r2 = 1 - ss_res / ss_tot if ss_tot else np.nan
+
+    def back(y):
+        try:
+            if model == "linear":
+                m, b = popt
+                if abs(m) < 1e-15:
+                    return np.nan
+                x = (y - b) / m
+            elif model == "loglinear":
+                m, b = popt
+                if abs(m) < 1e-15:
+                    return np.nan
+                x = 10.0 ** ((y - b) / m)
+            else:
+                a, b, c, dd = popt[:4]
+                g = popt[4] if model == "5pl" else 1.0
+                denom = y - dd
+                if abs(denom) < 1e-15 or abs(b) < 1e-15 or g <= 0:
+                    return np.nan
+                inner = ((a - dd) / denom) ** (1.0 / g) - 1.0
+                if not np.isfinite(inner) or inner <= 0:
+                    return np.nan
+                x = c * inner ** (1.0 / b)
+            return float(x) if np.isfinite(x) and x > 0 else np.nan
+        except (ValueError, ZeroDivisionError, FloatingPointError, OverflowError):
+            return np.nan
+
+    # Recovery means back-calculated concentration / nominal concentration.
+    back_std = np.asarray([back(float(y)) for y in sy], float)
+    recovery = np.where(np.isfinite(back_std), back_std / sx * 100.0, np.nan)
+    try:
+        lo_r, hi_r = [float(v.strip()) for v in str(params.get("recovery_range", "80-120")).split("-", 1)]
+    except Exception as exc:
+        raise ValueError("Recovery range must look like '80-120'.") from exc
+    if lo_r > hi_r:
+        lo_r, hi_r = hi_r, lo_r
+    bad_std = [{"conc": float(a), "od": float(b), "recovery": None if not np.isfinite(r) else float(r)}
+               for a, b, r in zip(sx, sy, recovery)
+               if not np.isfinite(r) or not (lo_r <= r <= hi_r)]
+
+    # Replicate precision is assessed among wells at the same nominal standard
+    # concentration.  Unknowns have no replicate identifier in the current schema.
+    max_cv = float(params.get("max_cv", 15))
+    rep_qc = []
+    for conc in sorted(np.unique(sx)):
+        vals = sy[sx == conc]
+        if len(vals) < 2:
+            continue
+        mean = float(np.mean(vals))
+        cv = float(np.std(vals, ddof=1) / abs(mean) * 100.0) if mean != 0 else float("inf")
+        rep_qc.append({"conc": float(conc), "n": int(len(vals)), "od_cv": cv,
+                       "flag": bool(cv > max_cv)})
+
+    dil = float(params.get("dilution", 1) or 1)
+    if dil <= 0:
+        raise ValueError("Dilution factor must be greater than zero.")
+    unknowns = []
+    min_od, max_od = float(np.min(sy)), float(np.max(sy))
+    for _, r in unk.iterrows():
+        y = pd.to_numeric(pd.Series([r[od_c]]), errors="coerce").iloc[0]
+        if not np.isfinite(y):
+            continue
+        val = back(float(y))
+        unknowns.append({"label": str(r.get(well_c, "")) if well_c else "",
+                         "od": float(y),
+                         "concentration": None if not np.isfinite(val) else float(val * dil),
+                         "in_range": bool(min_od <= y <= max_od)})
+
+    model_label = {"4pl": "4PL", "5pl": "5PL", "linear": "Linear",
+                   "loglinear": "Log-linear"}[model]
+    if model in {"4pl", "5pl"}:
+        parameters = {"a_low_asymptote": float(popt[0]), "b_hill": float(popt[1]),
+                      "c_ec50": float(popt[2]), "d_high_asymptote": float(popt[3])}
+        if model == "5pl":
+            parameters["g_asymmetry"] = float(popt[4])
+    else:
+        parameters = {"slope": float(popt[0]), "intercept": float(popt[1])}
+
+    if model == "linear":
+        curve_x = np.linspace(float(sx.min()), float(sx.max()), 120)
+    else:
+        curve_x = np.logspace(math.log10(max(float(sx.min()), 1e-12)),
+                              math.log10(float(sx.max())), 120)
+
+    out = {"kind": "elisa", "test": f"{model_label} standard curve",
+           "model": model, "parameters": parameters,
+           "r_squared": float(r2), "weighting": weight,
+           "standards": [{"conc": float(a), "od": float(b), "fitted": float(c),
+                          "back_calculated": None if not np.isfinite(bc) else float(bc),
+                          "recovery": None if not np.isfinite(r) else float(r)}
+                         for a, b, c, bc, r in zip(sx, sy, pred, back_std, recovery)],
+           "replicate_qc": rep_qc, "max_cv": max_cv,
+           "unknowns": unknowns,
+           "n_out_of_range": sum(1 for u in unknowns if not u["in_range"]),
+           "recovery_failures": bad_std,
+           "curve": [{"x": float(x), "y": float(fn(x, *popt))} for x in curve_x]}
+    warn = []
+    if np.isfinite(r2) and r2 < 0.98:
+        warn.append(f"Curve R² = {r2:.4f}. Check whether the selected model and standards adequately describe the assay response.")
+    if bad_std:
+        warn.append(f"{len(bad_std)} standard wells fall outside {lo_r:.0f}-{hi_r:.0f}% back-calculated recovery.")
+    bad_cv = [x for x in rep_qc if x["flag"]]
+    if bad_cv:
+        warn.append(f"{len(bad_cv)} standard concentration levels exceed the {max_cv:g}% replicate OD CV threshold.")
+    if out["n_out_of_range"]:
+        warn.append(f"{out['n_out_of_range']} unknowns fall outside the observed standard OD range; their concentrations are extrapolated.")
+    if warn:
+        out["warning"] = " ".join(warn)
+
+    if params.get("edge_effect") and well_c:
+        wells = unk[well_c].astype(str).str.strip().str.upper()
+        rowsl = wells.str[0]
+        colsn = pd.to_numeric(wells.str[1:], errors="coerce")
+        # Infer 96-vs-384 dimensions from observed well coordinates where possible.
+        max_col = int(colsn.max()) if colsn.notna().any() else 12
+        last_row = chr(ord("A") + (15 if max_col > 12 else 7))
+        edge = (rowsl.isin(["A", last_row])) | (colsn.isin([1, 24 if max_col > 12 else 12]))
+        inner = ~edge
+        if edge.sum() > 2 and inner.sum() > 2:
+            a = pd.to_numeric(unk.loc[edge.values, od_c], errors="coerce").dropna()
+            b = pd.to_numeric(unk.loc[inner.values, od_c], errors="coerce").dropna()
+            if len(a) > 1 and len(b) > 1:
+                st = stats.ttest_ind(a, b, equal_var=False)
+                out["edge_effect"] = {"edge_mean": float(a.mean()),
+                                      "inner_mean": float(b.mean()),
+                                      "p": float(st.pvalue),
+                                      "note": ("Edge wells differ from inner wells; evaporation or temperature gradient may be present."
+                                               if st.pvalue < 0.05 else
+                                               "No detectable edge effect.")}
+    return out
+
+
+# ─── Dimensionality reduction
+
+# ─── Dimensionality reduction ────────────────────────────────────────────
+
 RUNNERS = {
-    "qpcr": qpcr,
+    "qpcr": qpcr, "elisa": elisa,
 }
