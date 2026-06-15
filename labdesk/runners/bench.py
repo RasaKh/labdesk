@@ -444,6 +444,63 @@ def elisa(df, roles, params, ctl=None):
 
 # ─── Dimensionality reduction ────────────────────────────────────────────
 
+def dimreduction(df, roles, params, ctl=None):
+    cols = roles.get("vars", [])
+    colour = _one(roles, "colour")
+    sub = df[cols].apply(pd.to_numeric, errors="coerce")
+    keep = sub.notna().all(axis=1)
+    X = sub[keep].values
+    labels = df.loc[keep, colour].astype(str).tolist() if colour else None
+    if params.get("scale", True):
+        X = (X - X.mean(0)) / np.where(X.std(0, ddof=1) == 0, 1, X.std(0, ddof=1))
+    method = params.get("method", "pca")
+    ncomp = int(params.get("components", 2))
+
+    if method == "pca":
+        U, S, Vt = np.linalg.svd(X - X.mean(0), full_matrices=False)
+        scores = U[:, :ncomp] * S[:ncomp]
+        var = (S**2) / (len(X) - 1)
+        explained = (var / var.sum() * 100)
+        return {"kind": "embedding", "method": "PCA", "n": int(len(X)),
+                "points": [{"x": float(a), "y": float(b),
+                            "label": labels[i] if labels else None}
+                           for i, (a, b) in enumerate(scores[:, :2])],
+                "explained": explained[:min(10, len(explained))].round(2).tolist(),
+                "cumulative": np.cumsum(explained)[:10].round(2).tolist(),
+                "loadings": [{"variable": c,
+                              "pc1": float(Vt[0, j]), "pc2": float(Vt[1, j])}
+                             for j, c in enumerate(cols)],
+                "axis_labels": [f"PC1 ({explained[0]:.1f}%)", f"PC2 ({explained[1]:.1f}%)"]}
+
+    if not have("sklearn"):
+        raise ValueError("This method needs scikit-learn. pip install scikit-learn")
+    if method == "tsne":
+        from sklearn.manifold import TSNE
+        emb = TSNE(n_components=2, perplexity=float(params.get("perplexity", 30)),
+                   random_state=get("seed", 0), init="pca").fit_transform(X)
+        name = "t-SNE"
+    elif method == "umap":
+        if not have("umap"):
+            raise ValueError("UMAP needs umap-learn. pip install umap-learn")
+        import umap
+        emb = umap.UMAP(random_state=get("seed", 0)).fit_transform(X)
+        name = "UMAP"
+    else:
+        from sklearn.manifold import MDS
+        emb = MDS(n_components=2, random_state=get("seed", 0)).fit_transform(X)
+        name = "MDS"
+    return {"kind": "embedding", "method": name, "n": int(len(X)),
+            "points": [{"x": float(a), "y": float(b),
+                        "label": labels[i] if labels else None}
+                       for i, (a, b) in enumerate(emb)],
+            "axis_labels": [f"{name} 1", f"{name} 2"],
+            "caveat": "Distances between clusters in a neighbour embedding are not "
+                      "meaningful. Do not read separation as effect size."}
+
+
+# ─── Equivalence ─────────────────────────────────────────────────────────
+
 RUNNERS = {
     "qpcr": qpcr, "elisa": elisa,
+    "dimreduction": dimreduction,
 }
