@@ -9,6 +9,7 @@ from scipy.optimize import curve_fit
 
 from ..config import get, have
 from ..stats_run import cohen_d, fmt_p
+from ..stats_run import fmt_p
 
 
 def _one(roles, key):
@@ -500,7 +501,88 @@ def dimreduction(df, roles, params, ctl=None):
 
 # ─── Equivalence ─────────────────────────────────────────────────────────
 
+def tost(df, roles, params, ctl=None):
+    dv, group = _one(roles, "dv"), _one(roles, "group")
+    g = [(str(l), pd.to_numeric(s[dv], errors="coerce").dropna().values)
+         for l, s in df.groupby(group, dropna=True, observed=True)]
+    if len(g) != 2:
+        raise ValueError("TOST here compares exactly two groups.")
+    (l1, a), (l2, b) = g
+    lo = float(params.get("lower", -0.5)); hi = float(params.get("upper", 0.5))
+    alpha = float(params.get("alpha", 0.05))
+    if params.get("bound_type") == "d":
+        sp = math.sqrt((a.var(ddof=1) + b.var(ddof=1)) / 2)
+        lo, hi = lo * sp, hi * sp
+    diff = a.mean() - b.mean()
+    se = math.sqrt(a.var(ddof=1) / len(a) + b.var(ddof=1) / len(b))
+    dof = ((a.var(ddof=1) / len(a) + b.var(ddof=1) / len(b)) ** 2 /
+           ((a.var(ddof=1) / len(a)) ** 2 / (len(a) - 1) +
+            (b.var(ddof=1) / len(b)) ** 2 / (len(b) - 1)))
+    t1 = (diff - lo) / se
+    t2 = (diff - hi) / se
+    p1 = float(stats.t.sf(t1, dof))
+    p2 = float(stats.t.cdf(t2, dof))
+    p = max(p1, p2)
+    tcrit = stats.t.ppf(1 - alpha, dof)
+    return {"kind": "equivalence", "test": "Two one-sided tests (TOST)",
+            "levels": [l1, l2], "n": [len(a), len(b)],
+            "mean": [float(a.mean()), float(b.mean())],
+            "mean_diff": float(diff),
+            "bounds": [lo, hi],
+            "tost_ci": [float(diff - tcrit * se), float(diff + tcrit * se)],
+            "p_lower": p1, "p_upper": p2, "p": p,
+            "equivalent": bool(p < alpha),
+            "sentence": (f"Difference {diff:.3f}, {int((1-2*alpha)*100)}% TOST interval "
+                         f"[{diff - tcrit*se:.3f}, {diff + tcrit*se:.3f}], {fmt_p(p)}"),
+            "interpretation": ("The difference is statistically within the equivalence "
+                               "margin." if p < alpha else
+                               "Equivalence is not established. This is not the same as "
+                               "a difference being present.")}
+
+
+def noninferiority(df, roles, params, ctl=None):
+    out_c, group = _one(roles, "outcome"), _one(roles, "group")
+    g = [(str(l), s[out_c]) for l, s in df.groupby(group, dropna=True, observed=True)]
+    if len(g) != 2:
+        raise ValueError("Needs exactly two groups.")
+    (l1, a), (l2, b) = g
+    margin = float(params.get("margin", 0.1))
+    alpha = float(params.get("alpha", 0.025))
+    measure = params.get("measure", "mean_diff")
+    higher_better = params.get("direction", "higher") == "higher"
+    if measure == "mean_diff":
+        a = pd.to_numeric(a, errors="coerce").dropna().values
+        b = pd.to_numeric(b, errors="coerce").dropna().values
+        diff = a.mean() - b.mean()
+        se = math.sqrt(a.var(ddof=1) / len(a) + b.var(ddof=1) / len(b))
+        va, vb = a.var(ddof=1) / len(a), b.var(ddof=1) / len(b)
+        dof = (va + vb) ** 2 / (va**2 / (len(a) - 1) + vb**2 / (len(b) - 1))
+        crit = stats.t.ppf(1 - alpha, dof)
+        lo, hi = diff - crit * se, diff + crit * se
+        conclusion = (lo > -margin) if higher_better else (hi < margin)
+    else:
+        av = pd.to_numeric(a, errors="coerce").dropna()
+        bv = pd.to_numeric(b, errors="coerce").dropna()
+        p1, p2 = av.mean(), bv.mean()
+        diff = p1 - p2
+        se = math.sqrt(p1 * (1 - p1) / len(av) + p2 * (1 - p2) / len(bv))
+        z = stats.norm.ppf(1 - alpha)
+        lo, hi = diff - z * se, diff + z * se
+        conclusion = (lo > -margin) if higher_better else (hi < margin)
+    return {"kind": "equivalence", "test": "Non-inferiority",
+            "levels": [l1, l2], "measure": measure, "margin": margin,
+            "estimate": float(diff), "ci": [float(lo), float(hi)],
+            "one_sided_alpha": alpha,
+            "non_inferior": bool(conclusion),
+            "interpretation": ("Non-inferiority established at the stated margin."
+                               if conclusion else
+                               "Non-inferiority not established; the interval crosses "
+                               "the margin."),
+            "note": "The margin must be pre-specified and clinically justified. "
+                    "Choosing it after seeing the data invalidates the conclusion."}
+
 RUNNERS = {
     "qpcr": qpcr, "elisa": elisa,
-    "dimreduction": dimreduction,
+    "dimreduction": dimreduction, "tost": tost,
+    "noninferiority": noninferiority,
 }
