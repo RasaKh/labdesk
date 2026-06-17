@@ -9,7 +9,6 @@ from scipy.optimize import curve_fit
 
 from ..config import get, have
 from ..stats_run import cohen_d, fmt_p
-from ..stats_run import fmt_p
 
 
 def _one(roles, key):
@@ -581,8 +580,35 @@ def noninferiority(df, roles, params, ctl=None):
             "note": "The margin must be pre-specified and clinically justified. "
                     "Choosing it after seeing the data invalidates the conclusion."}
 
+
+def cluster_adjust(df, roles, params, ctl=None):
+    out_c, cl_c = _one(roles, "outcome"), _one(roles, "cluster")
+    sub = df[[out_c, cl_c]].dropna()
+    y = pd.to_numeric(sub[out_c], errors="coerce")
+    sub = sub.assign(_y=y).dropna(subset=["_y"])
+    groups = sub.groupby(cl_c, observed=True)["_y"]
+    k = groups.ngroups
+    n = len(sub)
+    m = n / k if k else np.nan
+    grand = sub["_y"].mean()
+    ms_b = groups.apply(lambda s: len(s) * (s.mean() - grand) ** 2).sum() / (k - 1) if k > 1 else np.nan
+    ms_w = groups.apply(lambda s: ((s - s.mean()) ** 2).sum()).sum() / (n - k) if n > k else np.nan
+    icc = float((ms_b - ms_w) / (ms_b + (m - 1) * ms_w)) if ms_b == ms_b and (ms_b + (m - 1) * ms_w) else np.nan
+    deff = 1 + (m - 1) * icc if icc == icc else np.nan
+    out = {"kind": "single", "test": "Cluster adjustment",
+           "n_clusters": int(k), "n_total": int(n), "mean_cluster_size": float(m),
+           "design_effect": float(deff),
+           "effective_n": float(n / deff) if deff and deff == deff else None,
+           "interpretation": (f"Treating these {n} observations as independent overstates "
+                              f"the sample size by a factor of {deff:.2f}. The effective "
+                              f"sample size is about {n/deff:.0f}."
+                              if deff == deff else "Could not estimate the design effect.")}
+    if params.get("report_icc", True):
+        out["icc"] = icc
+    return out
+
+
 RUNNERS = {
-    "qpcr": qpcr, "elisa": elisa,
-    "dimreduction": dimreduction, "tost": tost,
-    "noninferiority": noninferiority,
+    "qpcr": qpcr, "elisa": elisa, "dimreduction": dimreduction,
+    "tost": tost, "noninferiority": noninferiority, "cluster_adjust": cluster_adjust,
 }
