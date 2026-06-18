@@ -279,7 +279,59 @@ def meta_sensitivity(df, roles, params, ctl=None):
                      "estimate." if mode == "loo" else
                      "The pooled estimate as each study was added.")}
 
+
+def evalue(df, roles, params, ctl=None):
+    est = float(params.get("estimate") or 0)
+    measure = params.get("measure", "RR")
+    if measure == "OR":
+        rr = math.sqrt(est) if params.get("rare") else est
+        note = ("Odds ratio approximated to a risk ratio by its square root, which "
+                "assumes the outcome is not rare." if not params.get("rare")
+                else "Rare outcome, so the odds ratio was used directly as a risk ratio.")
+    elif measure == "HR":
+        rr = (1 - 0.5 ** math.sqrt(est)) / (1 - 0.5 ** math.sqrt(1 / est)) if est > 0 else np.nan
+        note = "Hazard ratio converted by the VanderWeele approximation."
+    elif measure == "SMD":
+        rr = math.exp(0.91 * est)
+        note = "Standardised mean difference converted by exp(0.91 × d)."
+    else:
+        rr = est
+        note = "Risk ratio used directly."
+
+    def ev(r):
+        if r is None or r != r or r <= 0:
+            return None
+        if r < 1:
+            r = 1 / r
+        return float(r + math.sqrt(r * (r - 1)))
+
+    lo = params.get("lo")
+    hi = params.get("hi")
+    bound = None
+    if lo not in (None, "") and hi not in (None, ""):
+        lo, hi = float(lo), float(hi)
+        if measure == "OR" and not params.get("rare"):
+            lo, hi = math.sqrt(lo), math.sqrt(hi)
+        if lo > 1:
+            bound = ev(lo)
+        elif hi < 1:
+            bound = ev(hi)
+        else:
+            bound = 1.0
+    return {"kind": "evalue", "estimate": est, "measure": measure,
+            "risk_ratio_used": rr, "evalue_point": ev(rr),
+            "evalue_ci": bound, "conversion_note": note,
+            "interpretation": (
+                f"An unmeasured confounder would need to be associated with both the "
+                f"exposure and the outcome by a risk ratio of at least "
+                f"{ev(rr):.2f} each, above and beyond the measured covariates, to "
+                f"explain away the point estimate."
+                + (f" To move the confidence limit to the null it would need "
+                   f"{bound:.2f}." if bound and bound > 1 else
+                   " The interval already includes the null." if bound == 1.0 else "")),
+            "cite": "VanderWeele TJ, Ding P. Ann Intern Med. 2017."}
+
 RUNNERS = {
     "meta_effect": meta_effect, "meta_bias": meta_bias,
-    "meta_sensitivity": meta_sensitivity,
+    "meta_sensitivity": meta_sensitivity, "evalue": evalue,
 }
