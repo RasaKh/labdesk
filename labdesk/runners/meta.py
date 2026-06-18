@@ -177,6 +177,109 @@ def meta_effect(df, roles, params, ctl=None):
                                         "a meta-analysis of randomised trials."}
     return res
 
+
+def meta_bias(df, roles, params, ctl=None):
+    yi = pd.to_numeric(df[_one(roles, "effect")], errors="coerce").values
+    se = pd.to_numeric(df[_one(roles, "se")], errors="coerce").values
+    ok = ~(np.isnan(yi) | np.isnan(se)) & (se > 0)
+    yi, se = yi[ok], se[ok]
+    k = len(yi)
+    out = {"kind": "meta_bias", "k": k, "tests": [],
+           "points": [{"yi": float(a), "se": float(b)} for a, b in zip(yi, se)]}
+    want = params.get("tests") or ["egger", "trimfill"]
+
+    if k < 10:
+        out["warning"] = (f"{k} studies. Tests for funnel asymmetry are underpowered "
+                          "below about ten studies and should not be reported as "
+                          "evidence of absence.")
+
+    if "egger" in want and k >= 3:
+        prec = 1 / se
+        snd = yi / se
+        sl, ic, r, p, sd = stats.linregress(prec, snd)
+        out["tests"].append({"name": "Egger regression intercept", "estimate": float(ic),
+                             "se": float(sd), "p": float(p),
+                             "interpretation": ("Funnel asymmetry present."
+                                                if p < 0.1 else "No clear asymmetry.")})
+    if "begg" in want and k >= 3:
+        wf = 1 / se**2
+        mu = np.sum(wf * yi) / np.sum(wf)
+        v_star = se**2 - 1 / np.sum(wf)
+        t_star = (yi - mu) / np.sqrt(np.maximum(v_star, 1e-12))
+        tau, p = stats.kendalltau(t_star, se**2)
+        out["tests"].append({"name": "Begg rank correlation", "estimate": float(tau),
+                             "p": float(p)})
+    if "trimfill" in want and k >= 3:
+        y = yi.copy(); s = se.copy()
+        mu = float(np.sum(y / s**2) / np.sum(1 / s**2))
+        k0 = 0
+        for _ in range(50):
+            centred = y - mu
+            order = np.argsort(np.abs(centred))
+            ranks = np.empty(len(y)); ranks[order] = np.arange(1, len(y) + 1)
+            signed = np.sign(centred) * ranks
+            Tn = signed[signed > 0].sum()
+            n = len(y)
+            new_k0 = int(max(0, round((4 * Tn - n * (n + 1)) / (2 * n - 1))))
+            if new_k0 == k0:
+                break
+            k0 = new_k0
+            keep = np.argsort(centred)[:len(y) - k0] if centred.mean() > 0 else \
+                np.argsort(centred)[k0:]
+            mu = float(np.sum(y[keep] / s[keep] ** 2) / np.sum(1 / s[keep] ** 2))
+        side = "left" if np.mean(yi) > mu else "right"
+        out["tests"].append({"name": "Trim and fill", "missing_studies": k0,
+                             "adjusted_pooled": mu,
+                             "interpretation": (f"Estimates {k0} missing studies on the "
+                                                f"{side}; adjusted pooled effect {mu:.3f}."
+                                                if k0 else "No studies imputed.")})
+    return out
+
+
+def meta_sensitivity(df, roles, params, ctl=None):
+    labels, yi, vi = _prepare(df, roles, params)
+    ok = ~(np.isnan(yi) | np.isnan(vi)) & (vi > 0)
+    labels = [l for l, kk in zip(labels, ok) if kk]
+    yi, vi = yi[ok], vi[ok]
+    k = len(yi)
+    mode = params.get("mode", "loo")
+    z = 1.959963985
+
+    def pool(y, v):
+        t2 = _tau2(y, v, "REML")
+        w = 1 / (v + t2)
+        mu = float(np.sum(w * y) / np.sum(w))
+        se = float(math.sqrt(1 / np.sum(w)))
+        Q = float(np.sum((1 / v) * (y - np.sum(y / v) / np.sum(1 / v)) ** 2))
+        I2 = max(0.0, 100 * (Q - (len(y) - 1)) / Q) if Q > 0 else 0.0
+        return mu, se, I2
+
+    rows = []
+    if mode == "cumulative":
+        order = list(range(k))
+        sb = params.get("sort_by")
+        if sb and sb in df.columns:
+            order = list(np.argsort(pd.to_numeric(df[sb], errors="coerce").values[ok]))
+        for i in range(1, k + 1):
+            idx = order[:i]
+            mu, se, I2 = pool(yi[idx], vi[idx])
+            rows.append({"label": f"+ {labels[order[i-1]]}", "k": i, "pooled": mu,
+                         "ci": [mu - z * se, mu + z * se], "i2": I2})
+    else:
+        full_mu, _, _ = pool(yi, vi)
+        for i in range(k):
+            idx = [j for j in range(k) if j != i]
+            mu, se, I2 = pool(yi[idx], vi[idx])
+            rows.append({"label": f"Omitting {labels[i]}", "k": k - 1, "pooled": mu,
+                         "ci": [mu - z * se, mu + z * se], "i2": I2,
+                         "shift": mu - full_mu})
+        rows.sort(key=lambda r: -abs(r.get("shift", 0)))
+    return {"kind": "meta_sensitivity", "mode": mode, "rows": rows, "k": k,
+            "note": ("Studies are ordered by how much omitting them moves the pooled "
+                     "estimate." if mode == "loo" else
+                     "The pooled estimate as each study was added.")}
+
 RUNNERS = {
-    "meta_effect": meta_effect,
+    "meta_effect": meta_effect, "meta_bias": meta_bias,
+    "meta_sensitivity": meta_sensitivity,
 }
