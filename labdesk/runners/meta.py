@@ -331,7 +331,10 @@ def evalue(df, roles, params, ctl=None):
                    " The interval already includes the null." if bound == 1.0 else "")),
             "cite": "VanderWeele TJ, Ding P. Ann Intern Med. 2017."}
 
+
 RUNNERS = {
-    "meta_effect": meta_effect, "meta_bias": meta_bias,
-    "meta_sensitivity": meta_sensitivity, "evalue": evalue,
+    "meta_effect": meta_effect,
+    "meta_bias": meta_bias,
+    "meta_sensitivity": meta_sensitivity,
+    "evalue": evalue,
 }
