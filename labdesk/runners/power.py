@@ -101,6 +101,81 @@ def power_ttest(df, roles, params, ctl=None):
                      "systematically overestimates it.")
     return out
 
+
+def _power_prop(n1, n2, p1, p2, alpha):
+    pbar = (p1 * n1 + p2 * n2) / (n1 + n2)
+    se0 = math.sqrt(pbar * (1 - pbar) * (1 / n1 + 1 / n2))
+    se1 = math.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
+    z = stats.norm.ppf(1 - alpha / 2)
+    if se1 <= 0:
+        return 0.0
+    return float(stats.norm.sf((z * se0 - abs(p1 - p2)) / se1))
+
+
+def power_prop(df, roles, params, ctl=None):
+    p1 = float(params.get("p1", 0.3)); p2 = float(params.get("p2", 0.5))
+    alpha = float(params.get("alpha", 0.05)); power = float(params.get("power", 0.8))
+    ratio = float(params.get("ratio", 1.0) or 1.0)
+    solve = params.get("solve_for", "n")
+    dropout = float(params.get("dropout", 0) or 0)
+    out = {"kind": "power", "test": "Two proportions", "solve_for": solve,
+           "alpha": alpha, "p1": p1, "p2": p2}
+    if solve == "n":
+        n = _solve(lambda x: _power_prop(x, x * ratio, p1, p2, alpha), power, 4, 1e7)
+        per = math.ceil(n)
+        total = math.ceil(per + per * ratio)
+        out.update(n_per_group=per, n_total=total, power=power,
+                   n_recruit_total=math.ceil(_inflate(total, dropout)), dropout=dropout)
+        out["curve"] = _curve(lambda x: _power_prop(x, x * ratio, p1, p2, alpha),
+                              max(4, per * 0.25), per * 2.5)
+        out["curve_x"] = "n per group"
+        out["sentence"] = (f"{per} per group ({total} total) to detect {p1:.0%} versus "
+                           f"{p2:.0%} at {power:.0%} power")
+    else:
+        n1 = int(params.get("n_per_group") or 50)
+        pw = _power_prop(n1, n1 * ratio, p1, p2, alpha)
+        out.update(n_per_group=n1, power=float(pw))
+        out["curve"] = _curve(lambda x: _power_prop(x, x * ratio, p1, p2, alpha),
+                              max(4, n1 * 0.25), n1 * 3)
+        out["curve_x"] = "n per group"
+        out["sentence"] = f"{n1} per group gives {pw:.1%} power."
+    return out
+
+
+def _power_anova(n_per, k, f_eff, alpha):
+    df1 = k - 1
+    df2 = k * (n_per - 1)
+    if df2 <= 0:
+        return 0.0
+    ncp = f_eff**2 * n_per * k
+    crit = stats.f.ppf(1 - alpha, df1, df2)
+    return float(stats.ncf.sf(crit, df1, df2, ncp))
+
+
+def power_anova(df, roles, params, ctl=None):
+    k = int(params.get("k", 3)); f_eff = float(params.get("effect", 0.25))
+    alpha = float(params.get("alpha", 0.05)); power = float(params.get("power", 0.8))
+    solve = params.get("solve_for", "n")
+    out = {"kind": "power", "test": f"One-way ANOVA, {k} groups", "alpha": alpha,
+           "solve_for": solve, "k": k}
+    if solve == "n":
+        n = math.ceil(_solve(lambda x: _power_anova(x, k, f_eff, alpha), power, 2.01, 1e6))
+        out.update(n_per_group=n, n_total=n * k, power=power, effect=f_eff)
+        out["curve"] = _curve(lambda x: _power_anova(x, k, f_eff, alpha),
+                              max(3, n * 0.25), n * 2.5)
+        out["curve_x"] = "n per group"
+        out["sentence"] = (f"{n} per group ({n*k} total) for {power:.0%} power at "
+                           f"Cohen's f = {f_eff}")
+    else:
+        n = int(params.get("n_per_group") or 20)
+        pw = _power_anova(n, k, f_eff, alpha)
+        out.update(n_per_group=n, power=float(pw), effect=f_eff)
+        out["curve"] = _curve(lambda x: _power_anova(n, k, x, alpha), 0.05, 0.8)
+        out["curve_x"] = "Cohen's f"
+        out["sentence"] = f"{n} per group gives {pw:.1%} power."
+    return out
+
 RUNNERS = {
-    "power_ttest": power_ttest,
+    "power_ttest": power_ttest, "power_prop": power_prop,
+    "power_anova": power_anova,
 }
