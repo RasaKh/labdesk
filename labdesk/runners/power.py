@@ -175,7 +175,35 @@ def power_anova(df, roles, params, ctl=None):
         out["sentence"] = f"{n} per group gives {pw:.1%} power."
     return out
 
+
+def power_corr(df, roles, params, ctl=None):
+    r = float(params.get("r", 0.3)); alpha = float(params.get("alpha", 0.05))
+    power = float(params.get("power", 0.8))
+    solve = params.get("solve_for", "n")
+
+    def pw(n):
+        if n < 4:
+            return 0.0
+        z = np.arctanh(r) * math.sqrt(n - 3)
+        c = stats.norm.ppf(1 - alpha / 2)
+        return float(stats.norm.sf(c - z) + stats.norm.cdf(-c - z))
+
+    out = {"kind": "power", "test": "Correlation", "alpha": alpha, "solve_for": solve, "r": r}
+    if solve == "n":
+        n = math.ceil(_solve(pw, power, 5, 1e7))
+        out.update(n_total=n, power=power)
+        out["curve"] = _curve(pw, 5, max(20, n * 2.5))
+        out["curve_x"] = "n"
+        out["sentence"] = f"n = {n} for {power:.0%} power to detect r = {r}."
+    else:
+        n = int(params.get("n_total") or 50)
+        out.update(n_total=n, power=pw(n))
+        out["curve"] = _curve(pw, 5, max(20, n * 2.5))
+        out["curve_x"] = "n"
+        out["sentence"] = f"n = {n} gives {pw(n):.1%} power."
+    return out
+
 RUNNERS = {
     "power_ttest": power_ttest, "power_prop": power_prop,
-    "power_anova": power_anova,
+    "power_anova": power_anova, "power_corr": power_corr,
 }
