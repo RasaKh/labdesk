@@ -203,6 +203,7 @@ def power_corr(df, roles, params, ctl=None):
         out["sentence"] = f"n = {n} gives {pw(n):.1%} power."
     return out
 
+
 RUNNERS = {
     "power_ttest": power_ttest, "power_prop": power_prop,
     "power_anova": power_anova, "power_corr": power_corr,
