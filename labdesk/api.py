@@ -1,4 +1,4 @@
-"""HTTP surface: the app factory, shell routes, and config.
+"""HTTP surface: the app factory, shell, config, and dataset endpoints.
 
 Every route takes a spec and returns JSON. The browser never sends code,
 never sends SQL and never sends a command line; it sends the id of a
@@ -10,6 +10,7 @@ import os
 from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, request
+from werkzeug.utils import secure_filename
 
 from . import (APP_NAME, APP_TAGLINE, APP_VERSION, analysis_guide, config, datasets, db,
                harvest, library, plots_registry, projects, reporting, screening,
@@ -78,6 +79,26 @@ def create_app():
                 out[key] = ""
         return out
 
+    def _dataset_in_scope(ds_id, body=None):
+        m = datasets.meta(ds_id)
+        return m if m and m.get("project_id") == scope(body) else None
+
+    def _inside(path, root):
+        try:
+            path = os.path.realpath(path)
+            root = os.path.realpath(root)
+            return os.path.commonpath([path, root]) == root
+        except (OSError, ValueError):
+            return False
+
+    def _loopback_request():
+        """True only for a browser on this machine talking to us directly.
+        Behind a reverse proxy every request arrives from 127.0.0.1, so a
+        forwarding header means the real client is somewhere else."""
+        if any(request.headers.get(h) for h in _PROXY_HEADERS):
+            return False
+        return request.remote_addr in ("127.0.0.1", "::1", None)
+
     # ── shell ────────────────────────────────────────────────────────────
     @app.get("/")
     def index():
@@ -124,5 +145,97 @@ def create_app():
             return jsonify(config.public(config.update(request.json or {})))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+
+    # ── datasets ─────────────────────────────────────────────────────────
+    @app.get("/api/datasets")
+    def list_ds():
+        return jsonify(datasets.list_datasets(scope()))
+
+    @app.post("/api/datasets/upload")
+    def upload_ds():
+        f = request.files.get("file")
+        if not f:
+            return jsonify({"error": "No file received."}), 400
+        original = f.filename or "upload.csv"
+        safe = secure_filename(original) or "upload.csv"
+        tmp = os.path.join(config.TMP_DIR, f"{db.new_id('up_')}_{safe}")
+        f.save(tmp)
+        try:
+            project_id = request.form.get("project") or active_project()
+            ds_id = datasets.import_file(tmp, name=original, source=original,
+                                         project_id=project_id)
+        except Exception as exc:
+            return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 400
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        return jsonify(datasets.meta(ds_id))
+
+    @app.post("/api/datasets/path")
+    def path_ds():
+        if not _loopback_request():
+            return jsonify({"error": "Server-side path import is available only from localhost; upload the file instead."}), 403
+        p = (request.json or {}).get("path", "")
+        if not os.path.exists(p):
+            return jsonify({"error": f"No file at {p}"}), 400
+        try:
+            return jsonify(datasets.meta(
+                datasets.import_file(p, project_id=active_project())))
+        except Exception as exc:
+            return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 400
+
+    @app.get("/api/datasets/<ds_id>")
+    def get_ds(ds_id):
+        m = _dataset_in_scope(ds_id)
+        if not m:
+            return jsonify({"error": "Not found"}), 404
+        df = datasets.load(ds_id)
+        m["preview"] = json.loads(df.head(200).to_json(orient="records", date_format="iso"))
+        return jsonify(m)
+
+    @app.post("/api/datasets/<ds_id>/dictionary")
+    def set_dict(ds_id):
+        if not _dataset_in_scope(ds_id):
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(datasets.set_dictionary(ds_id, request.json or {}))
+
+    @app.get("/api/datasets/<ds_id>/missing")
+    def ds_missing(ds_id):
+        if not _dataset_in_scope(ds_id):
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(datasets.missingness(ds_id))
+
+    @app.post("/api/datasets/<ds_id>/deident")
+    def ds_deident(ds_id):
+        if not _dataset_in_scope(ds_id):
+            return jsonify({"error": "Not found"}), 404
+        qi = (request.json or {}).get("quasi_identifiers") or []
+        return jsonify(datasets.deident_check(ds_id, qi))
+
+    @app.delete("/api/datasets/<ds_id>")
+    def del_ds(ds_id):
+        """Remove a dataset. Its runs are kept unless asked for, because the
+        ledger is evidence: deleting the data should not silently erase the
+        record that the analyses happened."""
+        also_runs = request.args.get("runs") == "1"
+        m = _dataset_in_scope(ds_id)
+        if not m:
+            return jsonify({"error": "Not found"}), 404
+        n_runs = db.runs_on_dataset(m["sha256"], m.get("project_id"))
+        if m and m.get("path") and os.path.exists(m["path"]):
+            try:
+                os.remove(m["path"])
+            except OSError:
+                pass
+        datasets._cache.pop(ds_id, None)
+        db.exec_("DELETE FROM dataset_op WHERE dataset_id=?", (ds_id,))
+        db.exec_("DELETE FROM dataset WHERE id=?", (ds_id,))
+        if also_runs and m:
+            db.exec_("DELETE FROM analysis_run WHERE dataset_id=? AND project_id IS ?",
+                     (ds_id, m.get("project_id")))
+        return jsonify({"ok": True, "runs_kept": 0 if also_runs else n_runs,
+                        "runs_deleted": n_runs if also_runs else 0})
 
     return app
