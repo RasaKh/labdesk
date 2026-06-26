@@ -9,12 +9,12 @@ import json
 import os
 from urllib.parse import urlparse
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
 from . import (APP_NAME, APP_TAGLINE, APP_VERSION, analysis_guide, config, datasets, db,
                harvest, library, plots_registry, projects, reporting, screening,
-               stats_registry, stats_run)
+               plots_run, stats_registry, stats_run)
 from .jobs import JOBS
 
 _PROXY_HEADERS = ("X-Forwarded-For", "X-Real-IP", "Forwarded", "CF-Connecting-IP")
@@ -86,6 +86,10 @@ def create_app():
     def _run_in_scope(run_id, body=None):
         return db.one("SELECT * FROM analysis_run WHERE id=? AND project_id IS ?",
                       (run_id, scope(body)))
+
+    def _figure_in_scope(fig_id, body=None):
+        return db.one("SELECT * FROM figure WHERE id=? AND project_id IS ?",
+                      (fig_id, scope(body)))
 
     def _inside(path, root):
         try:
@@ -367,5 +371,108 @@ def create_app():
                 os.remove(f["path"])
             except OSError:
                 pass
+
+    # ── plots ────────────────────────────────────────────────────────────
+    @app.post("/api/plot")
+    def api_plot():
+        body = request.json or {}
+        run_id = body.get("run_id")
+        result = body.get("result")
+        if run_id:
+            # A figure attached to a ledger run is rendered from that run's
+            # immutable stored result/spec, never from a caller-supplied
+            # replacement carrying the same run id.
+            r = _run_in_scope(run_id, body)
+            if not r:
+                return jsonify({"error": "Run not found"}), 404
+            result = json.loads(r["result"] or "{}")
+            result["run_id"] = run_id
+            result["project_id"] = r.get("project_id")
+            spec = json.loads(r["spec"] or "{}")
+        else:
+            spec = body.get("spec") or {}
+        if result is not None:
+            result.setdefault("project_id", scope(body))
+        data = _raw_for_plot(spec, result, body.get("plot"), body)
+        try:
+            path = plots_run.render(body.get("plot"), result, body.get("params") or {}, data)
+        except NotImplementedError as exc:
+            return jsonify({"error": str(exc), "not_implemented": True}), 501
+        except Exception as exc:
+            return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 400
+        return jsonify({"path": path, "url": f"/api/figure?path={path}",
+                        "name": os.path.basename(path)})
+
+    def _raw_for_plot(spec, result, plot_id, body=None):
+        """Attach the raw values a plot needs but a result dict does not carry."""
+        try:
+            ds_id = spec.get("dataset")
+            if ds_id and not _dataset_in_scope(ds_id, body):
+                return None
+            df = datasets.load(ds_id) if ds_id else None
+        except Exception:
+            return None
+        if df is None:
+            return None
+        roles = spec.get("roles") or {}
+
+        def first(k):
+            v = roles.get(k)
+            return v[0] if isinstance(v, list) and v else v
+
+        import pandas as pd
+        dv, group = first("dv"), first("group")
+        if dv and group and dv in df.columns and group in df.columns:
+            out = {}
+            for lvl, sub in df.groupby(group, dropna=True, observed=True):
+                out[str(lvl)] = pd.to_numeric(sub[dv], errors="coerce").dropna().tolist()
+            return out
+        if plot_id in ("qq", "hist"):
+            col = dv or first("vars") or (roles.get("vars") or [None])[0]
+            if col and col in df.columns:
+                return {"values": pd.to_numeric(df[col], errors="coerce").dropna().tolist(),
+                        "label": col}
+        if plot_id == "scatter_fit":
+            vs = roles.get("vars") or []
+            if len(vs) >= 2:
+                pair = df[vs[:2]].apply(pd.to_numeric, errors="coerce").dropna()
+                return {"x": pair[vs[0]].tolist(), "y": pair[vs[1]].tolist(),
+                        "xlabel": vs[0], "ylabel": vs[1]}
+        return None
+
+    @app.get("/api/figure")
+    def api_figure():
+        p = request.args.get("path", "")
+        if not _inside(p, config.FIG_DIR) or not os.path.isfile(p):
+            return jsonify({"error": "Not found"}), 404
+        if not db.one("SELECT id FROM figure WHERE path=? AND project_id IS ?", (p, scope())):
+            return jsonify({"error": "Not found"}), 404
+        return send_file(p)
+
+    @app.get("/api/figures")
+    def api_figures():
+        rows = db.query("SELECT * FROM figure WHERE project_id IS ? "
+                        "ORDER BY created_at DESC LIMIT 200", (scope(),))
+        for r in rows:
+            r["exists"] = bool(r.get("path") and os.path.exists(r["path"]))
+        return jsonify(rows)
+
+    @app.delete("/api/figures/<fig_id>")
+    def del_fig(fig_id):
+        f = _figure_in_scope(fig_id)
+        if f:
+            _unlink_fig(f)
+            db.exec_("DELETE FROM figure WHERE id=?", (fig_id,))
+        return jsonify({"ok": bool(f)})
+
+    @app.post("/api/figures/clear")
+    def clear_figs():
+        project_id = scope()
+        rows = db.query("SELECT * FROM figure WHERE project_id IS ?", (project_id,))
+        for f in rows:
+            _unlink_fig(f)
+        db.exec_("DELETE FROM figure WHERE project_id IS ?", (project_id,))
+        return jsonify({"ok": True, "deleted": len(rows)})
+
 
     return app
