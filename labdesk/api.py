@@ -1,4 +1,4 @@
-"""HTTP surface: the app factory, shell, config, and dataset endpoints.
+"""HTTP surface: shell, datasets, and statistics.
 
 Every route takes a spec and returns JSON. The browser never sends code,
 never sends SQL and never sends a command line; it sends the id of a
@@ -14,7 +14,7 @@ from werkzeug.utils import secure_filename
 
 from . import (APP_NAME, APP_TAGLINE, APP_VERSION, analysis_guide, config, datasets, db,
                harvest, library, plots_registry, projects, reporting, screening,
-               stats_registry)
+               stats_registry, stats_run)
 from .jobs import JOBS
 
 _PROXY_HEADERS = ("X-Forwarded-For", "X-Real-IP", "Forwarded", "CF-Connecting-IP")
@@ -82,6 +82,10 @@ def create_app():
     def _dataset_in_scope(ds_id, body=None):
         m = datasets.meta(ds_id)
         return m if m and m.get("project_id") == scope(body) else None
+
+    def _run_in_scope(run_id, body=None):
+        return db.one("SELECT * FROM analysis_run WHERE id=? AND project_id IS ?",
+                      (run_id, scope(body)))
 
     def _inside(path, root):
         try:
@@ -237,5 +241,131 @@ def create_app():
                      (ds_id, m.get("project_id")))
         return jsonify({"ok": True, "runs_kept": 0 if also_runs else n_runs,
                         "runs_deleted": n_runs if also_runs else 0})
+
+    # ── statistics ───────────────────────────────────────────────────────
+    @app.post("/api/analysis/compatible")
+    def api_analysis_compatible():
+        """Deterministically match the reviewed dictionary to method roles.
+
+        This endpoint never chooses a test. It only reports which READY
+        registry entries can be structurally populated from the active
+        dataset, optionally constrained by researcher-selected anchor columns.
+        """
+        body = request.json or {}
+        ds_id = body.get("dataset")
+        m = _dataset_in_scope(ds_id, body) if ds_id else None
+        if not m:
+            return jsonify({"error": "Choose a dataset in this project first."}), 400
+        try:
+            return jsonify(analysis_guide.compatible_methods(
+                m.get("dictionary") or {},
+                goal_id=body.get("goal") or "compare",
+                primary=body.get("primary") or None,
+                secondary=body.get("secondary") or None,
+                limit=body.get("limit", 12),
+            ))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/preflight")
+    def api_preflight():
+        try:
+            spec = request.json or {}
+            spec.setdefault("project", active_project())
+            return jsonify(stats_run.preflight(spec))
+        except Exception as exc:
+            return jsonify({"ok": False, "errors": [f"{type(exc).__name__}: {exc}"]}), 400
+
+    @app.post("/api/run")
+    def api_run():
+        spec = request.json or {}
+        spec.setdefault("project", active_project())
+        heavy = spec.get("test") in ("permutation_two", "bootstrap_diff", "power_sim",
+                                     "classifier_eval", "network_meta")
+        if heavy or spec.get("as_job"):
+            entry = stats_registry.get(spec.get("test")) or {}
+            job = JOBS.submit("analysis", entry.get("label", spec.get("test", "Analysis")),
+                              lambda ctl: stats_run.run(spec, ctl), spec)
+            return jsonify({"job": job.id, "queued": True})
+        try:
+            return jsonify(stats_run.run(spec))
+        except stats_run.NotImplementedRunner as exc:
+            return jsonify({"ok": False, "not_implemented": True,
+                            "errors": [str(exc)]}), 501
+        except Exception as exc:
+            return jsonify({"ok": False, "errors": [f"{type(exc).__name__}: {exc}"]}), 400
+
+    @app.get("/api/runs")
+    def api_runs():
+        rows = db.query("SELECT id, test_id, status, created_at, duration_ms, note, "
+                        "dataset_id, dataset_sha FROM analysis_run "
+                        "WHERE project_id IS ? ORDER BY created_at DESC LIMIT 300",
+                        (scope(),))
+        return jsonify(rows)
+
+    @app.get("/api/runs/<run_id>")
+    def api_run_detail(run_id):
+        r = _run_in_scope(run_id)
+        if not r:
+            return jsonify({"error": "Not found"}), 404
+        for k in ("spec", "result", "assumptions", "versions"):
+            try:
+                r[k] = json.loads(r[k] or "null")
+            except Exception:
+                pass
+        return jsonify(r)
+
+    @app.delete("/api/runs/<run_id>")
+    def del_run(run_id):
+        """Delete one entry from the provenance ledger, and every figure that
+        was drawn from it. The count of what went is returned so the interface
+        can say what it did rather than just going quiet."""
+        r = _run_in_scope(run_id)
+        if not r:
+            return jsonify({"error": "Not found"}), 404
+        figs = db.query("SELECT * FROM figure WHERE run_id=? AND project_id IS ?",
+                        (run_id, scope()))
+        for f in figs:
+            _unlink_fig(f)
+        db.exec_("DELETE FROM figure WHERE run_id=? AND project_id IS ?", (run_id, scope()))
+        db.exec_("DELETE FROM analysis_run WHERE id=? AND project_id IS ?", (run_id, scope()))
+        return jsonify({"ok": True, "figures_deleted": len(figs)})
+
+    @app.post("/api/runs/clear")
+    def clear_runs():
+        """Scope: all | dataset | failed | blocked | before. Clearing the whole
+        ledger resets the multiplicity audit, so the response says so."""
+        b = request.json or {}
+        clear_scope = b.get("scope", "all")
+        project_id = scope(b)
+        where, args = "project_id IS ?", [project_id]
+        if clear_scope == "dataset" and b.get("dataset"):
+            m = _dataset_in_scope(b["dataset"], b)
+            where, args = "project_id IS ? AND dataset_id=?", [project_id, b["dataset"] if m else ""]
+        elif clear_scope == "failed":
+            where += " AND status='failed'"
+        elif clear_scope == "blocked":
+            where += " AND status='blocked'"
+        elif clear_scope == "before" and b.get("before"):
+            where += " AND created_at < ?"; args.append(float(b["before"]))
+        ids = [r["id"] for r in db.query(f"SELECT id FROM analysis_run WHERE {where}",
+                                         tuple(args))]
+        for f in db.query("SELECT * FROM figure WHERE project_id IS ?", (args[0],)):
+            if f["run_id"] in ids:
+                _unlink_fig(f)
+                db.exec_("DELETE FROM figure WHERE id=?", (f["id"],))
+        db.exec_(f"DELETE FROM analysis_run WHERE {where}", tuple(args))
+        return jsonify({"ok": True, "deleted": len(ids), "scope": clear_scope,
+                        "note": ("The multiplicity audit now counts from zero. "
+                                 "That is the point of clearing it, but it also means "
+                                 "the tests you ran before this are no longer recorded."
+                                 if clear_scope == "all" else None)})
+
+    def _unlink_fig(f):
+        if f.get("path") and os.path.exists(f["path"]):
+            try:
+                os.remove(f["path"])
+            except OSError:
+                pass
 
     return app
