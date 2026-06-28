@@ -699,4 +699,152 @@ def create_app():
                                              scope()))
 
 
+    # ── projects ─────────────────────────────────────────────────────────
+    @app.get("/api/projects")
+    def api_projects():
+        return jsonify({
+            "projects": projects.listing(
+                include_archived=request.args.get("archived") == "1"),
+            "active": active_project(),
+            "kinds": projects.KINDS,
+            "unfiled": projects.unfiled(),
+        })
+
+    @app.post("/api/projects")
+    def api_create_project():
+        b = request.json or {}
+        p = projects.create(b.get("name", ""), b.get("kind", "review"),
+                            b.get("question", ""), b.get("registered", ""),
+                            b.get("notes", ""))
+        if b.get("activate", True):
+            config.update({"active_project": p["id"]})
+        if b.get("adopt_unfiled"):
+            projects.adopt_unfiled(p["id"])
+        return jsonify(p)
+
+    @app.get("/api/projects/<pid>")
+    def api_project(pid):
+        p = projects.get(pid)
+        if not p:
+            return jsonify({"error": "Not found"}), 404
+        p["progress"] = projects.progress(pid)
+        p["counts"] = projects.counts(pid)
+        p["timeline"] = projects.timeline(pid)
+        return jsonify(p)
+
+    @app.patch("/api/projects/<pid>")
+    def api_update_project(pid):
+        return jsonify(projects.update(pid, request.json or {}))
+
+    @app.post("/api/projects/<pid>/activate")
+    def api_activate(pid):
+        if not projects.get(pid):
+            return jsonify({"error": "Not found"}), 404
+        config.update({"active_project": pid})
+        return jsonify({"ok": True, "active": pid})
+
+    @app.post("/api/projects/<pid>/stage")
+    def api_stage(pid):
+        b = request.json or {}
+        projects.set_stage_note(pid, b["stage"], b.get("note"), b.get("done"))
+        return jsonify(projects.progress(pid))
+
+    @app.post("/api/projects/<pid>/adopt")
+    def api_adopt(pid):
+        b = request.json or {}
+        return jsonify(projects.adopt_unfiled(
+            pid, b.get("what") or ("records", "datasets", "runs", "figures")))
+
+    @app.delete("/api/projects/<pid>")
+    def api_del_project(pid):
+        purge = request.args.get("purge") != "0"
+        res = projects.delete(pid, purge=purge)
+        if config.get("active_project") == pid:
+            config.update({"active_project": None})
+        return jsonify(res)
+
+    # ── library ──────────────────────────────────────────────────────────
+    @app.get("/api/library")
+    def api_library():
+        return jsonify({"sections": library.grouped(),
+                        "count": len(library.ENTRIES)})
+
+    @app.get("/api/library/<entry_id>")
+    def api_library_entry(entry_id):
+        e = library.get(entry_id)
+        return jsonify(e) if e else (jsonify({"error": "Not found"}), 404)
+
+    @app.get("/api/library/search")
+    def api_library_search():
+        return jsonify(library.search(request.args.get("q", "")))
+
+    # ── reviewers ────────────────────────────────────────────────────────
+    @app.get("/api/reviewers")
+    def api_reviewers():
+        return jsonify(screening.reviewers(scope()))
+
+    @app.post("/api/reviewers")
+    def api_add_reviewer():
+        b = request.json or {}
+        if b.get("id"):
+            return jsonify(screening.rename_reviewer(b["id"], b.get("name", "")))
+        return jsonify(screening.add_reviewer(b.get("name", ""), b.get("role", "screener")))
+
+    @app.delete("/api/reviewers/<rid>")
+    def api_del_reviewer(rid):
+        keep = request.args.get("decisions") != "0"
+        return jsonify(screening.remove_reviewer(rid, keep_decisions=keep))
+
+    @app.post("/api/screen/resolve")
+    def api_resolve():
+        b = request.json or {}
+        if not _record_in_scope(b.get("record_id"), b):
+            return jsonify({"error": "Record not found in this project."}), 404
+        return jsonify(screening.resolve(b["record_id"], b.get("stage", "title_abstract"),
+                                         b["decision"], b.get("rationale", ""),
+                                         b.get("by")))
+
+    # ── reporting ────────────────────────────────────────────────────────
+    @app.post("/api/report/sentence")
+    def api_sentence():
+        b = request.json or {}
+        return jsonify({"text": reporting.sentence(b.get("result") or {}, b.get("style"))})
+
+    @app.get("/api/report/methods")
+    def api_methods():
+        return jsonify(reporting.methods_paragraph(request.args.get("sha"),
+                                                   project_id=scope()))
+
+    @app.get("/api/report/checklist/<kind>")
+    def api_checklist(kind):
+        try:
+            return jsonify(reporting.checklist(kind))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+
+    @app.post("/api/report/bundle")
+    def api_bundle():
+        b = request.json or {}
+        try:
+            return jsonify(reporting.bundle(b.get("dataset"), b.get("include_data", True),
+                                            project_id=scope(b)))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/report/prereg")
+    def api_prereg():
+        b = request.json or {}
+        return jsonify(reporting.prereg_draft(b.get("question", ""),
+                                              b.get("outcomes", ""),
+                                              b.get("hypotheses", "")))
+
+    @app.get("/api/download")
+    def api_download():
+        p = request.args.get("path", "")
+        if not (_inside(p, config.EXPORT_DIR) or _inside(p, config.FIG_DIR)) \
+                or not os.path.isfile(p):
+            return jsonify({"error": "Not found"}), 404
+        return send_file(p, as_attachment=True)
+
+
     return app
