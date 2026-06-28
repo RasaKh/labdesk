@@ -87,6 +87,10 @@ def create_app():
         return db.one("SELECT * FROM analysis_run WHERE id=? AND project_id IS ?",
                       (run_id, scope(body)))
 
+    def _record_in_scope(record_id, body=None):
+        return db.one("SELECT * FROM record WHERE id=? AND project_id IS ?",
+                      (record_id, scope(body)))
+
     def _figure_in_scope(fig_id, body=None):
         return db.one("SELECT * FROM figure WHERE id=? AND project_id IS ?",
                       (fig_id, scope(body)))
@@ -473,6 +477,226 @@ def create_app():
             _unlink_fig(f)
         db.exec_("DELETE FROM figure WHERE project_id IS ?", (project_id,))
         return jsonify({"ok": True, "deleted": len(rows)})
+
+
+    # ── harvest ──────────────────────────────────────────────────────────
+    @app.post("/api/harvest")
+    def api_harvest():
+        body = request.json or {}
+        sid = body.get("source")
+        entry = harvest.REGISTRY.get(sid)
+        if not entry:
+            return jsonify({"error": f"Unknown source {sid!r}"}), 400
+        params = body.get("params") or {}
+        pid = scope(body)
+        job = JOBS.submit("harvest", f"{entry['label']} search",
+                          lambda ctl: harvest.harvest(sid, params, pid, ctl), body,
+                          project_id=pid)
+        return jsonify({"job": job.id, "queued": True})
+
+    @app.get("/api/records")
+    def api_records():
+        pid = scope()
+        q = request.args.get("q", "")
+        sql = ("SELECT id, source, doi, title, authors, journal, year, retracted, oa_url, "
+               "dedup_of FROM record WHERE project_id IS ?")
+        args = [pid]
+        if q:
+            sql += " AND (title LIKE ? OR abstract LIKE ?)"
+            args += [f"%{q}%", f"%{q}%"]
+        sql += " ORDER BY year DESC LIMIT 500"
+        return jsonify(db.query(sql, tuple(args)))
+
+    @app.post("/api/dedup")
+    def api_dedup():
+        pid = scope(request.json or {})
+        job = JOBS.submit("dedup", "Deduplicating corpus",
+                          lambda ctl: screening.deduplicate(pid, ctl=ctl),
+                          project_id=pid)
+        return jsonify({"job": job.id, "queued": True})
+
+    @app.post("/api/records/preview")
+    def records_preview():
+        """Count what a trim would remove before it removes it. Narrowing a
+        search after the fact is normal; doing it blind is not."""
+        where, args = _record_filter(request.json or {})
+        n = db.one(f"SELECT COUNT(*) c FROM record WHERE {where}", tuple(args))
+        sample = db.query(f"SELECT title, year, source, doi FROM record WHERE {where} "
+                          "ORDER BY year DESC LIMIT 12", tuple(args))
+        total = db.one("SELECT COUNT(*) c FROM record WHERE project_id IS ?", (scope(request.json or {}),))
+        return jsonify({"matched": n["c"] if n else 0,
+                        "total": total["c"] if total else 0,
+                        "remaining": (total["c"] - n["c"]) if (total and n) else 0,
+                        "sample": sample})
+
+    @app.post("/api/records/delete")
+    def records_delete():
+        where, args = _record_filter(request.json or {})
+        n = db.one(f"SELECT COUNT(*) c FROM record WHERE {where}", tuple(args))
+        # Screening decisions, extractions and risk-of-bias rows cascade with
+        # the record, so a trim cannot leave orphaned judgements behind.
+        db.exec_(f"DELETE FROM record WHERE {where}", tuple(args))
+        return jsonify({"ok": True, "deleted": n["c"] if n else 0})
+
+    @app.delete("/api/records/<rec_id>")
+    def del_record(rec_id):
+        rec = _record_in_scope(rec_id)
+        if not rec:
+            return jsonify({"error": "Not found"}), 404
+        db.exec_("DELETE FROM record WHERE id=? AND project_id IS ?", (rec_id, scope()))
+        return jsonify({"ok": True})
+
+    def _record_filter(b):
+        """Build a WHERE clause from the trim controls. Anything left blank is
+        simply not applied, so an empty filter matches everything and the
+        preview will say so loudly."""
+        clauses, args = [], []
+        # Always project-scoped. A trim in one project must never be able to
+        # reach into another's corpus.
+        clauses.append("project_id IS ?")
+        args.append(b["project"] if b.get("project") is not None else active_project())
+        if b.get("ids"):
+            marks = ",".join("?" for _ in b["ids"])
+            clauses.append(f"id IN ({marks})"); args += list(b["ids"])
+        if b.get("source"):
+            clauses.append("source = ?"); args.append(b["source"])
+        if b.get("query"):
+            clauses.append("(title LIKE ? OR abstract LIKE ?)")
+            args += [f"%{b['query']}%"] * 2
+        if b.get("not_query"):
+            clauses.append("(COALESCE(title,'') NOT LIKE ? AND COALESCE(abstract,'') NOT LIKE ?)")
+            args += [f"%{b['not_query']}%"] * 2
+        if b.get("year_before"):
+            clauses.append("(year IS NULL OR year < ?)"); args.append(int(b["year_before"]))
+        if b.get("year_after"):
+            clauses.append("year > ?"); args.append(int(b["year_after"]))
+        if b.get("no_abstract"):
+            clauses.append("(abstract IS NULL OR abstract = '')")
+        if b.get("retracted"):
+            clauses.append("retracted > 0")
+        if b.get("duplicates"):
+            clauses.append("dedup_of IS NOT NULL")
+        if b.get("unscreened"):
+            clauses.append("id NOT IN (SELECT record_id FROM screen)")
+        if b.get("excluded"):
+            clauses.append("id IN (SELECT record_id FROM screen WHERE decision='exclude')")
+        return (" AND ".join(clauses) if clauses else "1=1"), args
+
+    # ── screening ────────────────────────────────────────────────────────
+    @app.get("/api/screen/queue")
+    def api_queue():
+        return jsonify(screening.queue(
+            scope(),
+            request.args.get("stage", "title_abstract"),
+            request.args.get("reviewer"),
+            int(request.args.get("limit", 50)),
+            blind=request.args.get("blind", "1") != "0"))
+
+    @app.post("/api/screen/decide")
+    def api_decide():
+        b = request.json or {}
+        if not _record_in_scope(b.get("record_id"), b):
+            return jsonify({"error": "Record not found in this project."}), 404
+        return jsonify(screening.decide(b["record_id"], b["decision"],
+                                        b.get("stage", "title_abstract"),
+                                        b.get("reviewer"), b.get("reason")))
+
+    @app.post("/api/screen/undo")
+    def api_undo():
+        """Remove the most recent decision by this reviewer at this stage, so
+        a mis-keyed include is genuinely retractable rather than just scrolled
+        past."""
+        b = request.json or {}
+        row = screening.undo_latest(scope(b), b.get("stage", "title_abstract"),
+                                    b.get("reviewer"))
+        if not row:
+            return jsonify({"ok": False, "message": "Nothing to undo at this stage."})
+        return jsonify({"ok": True, "undone": row["decision"], "title": row["title"],
+                        "record_id": row["record_id"]})
+
+    @app.post("/api/screen/reset")
+    def api_screen_reset():
+        """Scope: stage | reviewer | all. Records are untouched; only the
+        judgements go, so the corpus survives a restart of the screen."""
+        b = request.json or {}
+        reset_scope = b.get("scope", "stage")
+        project_id = scope(b)
+        base = "record_id IN (SELECT id FROM record WHERE project_id IS ?)"
+        args = [project_id]
+        if reset_scope == "all":
+            where = base
+        elif reset_scope == "reviewer":
+            where = base + " AND reviewer=?"; args.append(b.get("reviewer"))
+        else:
+            where = base + " AND stage=? AND reviewer=?"
+            args += [b.get("stage", "title_abstract"), b.get("reviewer")]
+        n = db.one(f"SELECT COUNT(*) c FROM screen WHERE {where}", tuple(args))
+        db.exec_(f"DELETE FROM screen WHERE {where}", tuple(args))
+        return jsonify({"ok": True, "deleted": n["c"] if n else 0,
+                        "note": "Records kept. Only the decisions were cleared."})
+
+    @app.delete("/api/screen/<record_id>")
+    def api_unscreen(record_id):
+        if not _record_in_scope(record_id):
+            return jsonify({"error": "Not found"}), 404
+        db.exec_("DELETE FROM screen WHERE record_id=?", (record_id,))
+        return jsonify({"ok": True})
+
+    @app.delete("/api/extraction/<record_id>")
+    def api_del_extraction(record_id):
+        if not _record_in_scope(record_id):
+            return jsonify({"error": "Not found"}), 404
+        db.exec_("DELETE FROM extraction WHERE record_id=?", (record_id,))
+        return jsonify({"ok": True})
+
+    @app.delete("/api/rob/<record_id>")
+    def api_del_rob(record_id):
+        if not _record_in_scope(record_id):
+            return jsonify({"error": "Not found"}), 404
+        db.exec_("DELETE FROM rob WHERE record_id=?", (record_id,))
+        return jsonify({"ok": True})
+
+    @app.get("/api/screen/agreement")
+    def api_agreement():
+        return jsonify(screening.agreement(scope(),
+                                           request.args.get("stage", "title_abstract"),
+                                           request.args.get("a"), request.args.get("b")))
+
+    @app.get("/api/screen/prisma")
+    def api_prisma():
+        return jsonify(screening.prisma_counts(scope()))
+
+    @app.post("/api/extraction")
+    def api_extract():
+        b = request.json or {}
+        if not _record_in_scope(b.get("record_id"), b):
+            return jsonify({"error": "Record not found in this project."}), 404
+        return jsonify(screening.save_extraction(b["record_id"], b["form_id"],
+                                                 b.get("payload") or {}))
+
+    @app.get("/api/extraction")
+    def api_extract_table():
+        return jsonify(screening.extraction_table(request.args.get("form", "rct"),
+                                                  scope()))
+
+    @app.get("/api/extraction/meta")
+    def api_extract_meta():
+        return jsonify(screening.to_meta_frame(request.args.get("form", "rct"),
+                                               scope(),
+                                               request.args.get("measure", "SMD")))
+
+    @app.post("/api/rob")
+    def api_rob():
+        b = request.json or {}
+        if not _record_in_scope(b.get("record_id"), b):
+            return jsonify({"error": "Record not found in this project."}), 404
+        return jsonify(screening.set_rob(b["record_id"], b["instrument"],
+                                         b.get("domains") or {}, b.get("overall")))
+
+    @app.get("/api/rob")
+    def api_rob_summary():
+        return jsonify(screening.rob_summary(request.args.get("instrument", "rob2"),
+                                             scope()))
 
 
     return app
