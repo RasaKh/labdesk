@@ -847,4 +847,141 @@ def create_app():
         return send_file(p, as_attachment=True)
 
 
+    # ── wholesale clearing ───────────────────────────────────────────────
+    #
+    # Everything above deletes one thing. This deletes a whole category, and
+    # is deliberately the only place that can. Each scope reports what it would
+    # remove before it removes it, so nothing here is a one-click surprise.
+
+    RESET_SCOPES = {
+        "cache":     ("Harvest cache", "Cached API responses. Safe: they refetch."),
+        "figures":   ("Figures", "Rendered images on disk and their records."),
+        "runs":      ("Run ledger", "Every analysis result and the multiplicity audit."),
+        "screening": ("Screening decisions", "Include/exclude judgements. Records kept."),
+        "extraction":("Extractions and risk of bias", "Extracted data and RoB judgements."),
+        "corpus":    ("Corpus", "All harvested records, and everything attached to them."),
+        "datasets":  ("Datasets", "Imported data files. Runs are kept."),
+        "everything":("Everything", "Full reset back to a first launch."),
+    }
+
+    @app.get("/api/reset/scopes")
+    def reset_scopes():
+        out = []
+        for key, (label, desc) in RESET_SCOPES.items():
+            out.append({"id": key, "label": label, "description": desc,
+                        "count": _reset_count(key)})
+        return jsonify(out)
+
+    def _reset_count(scope):
+        # Project-local. Clearing the corpus in one project must not touch
+        # another's, which is the whole point of projects existing.
+        pid = active_project()
+        one = lambda q, a=(): (db.one(q, a) or {}).get("c", 0)
+        if scope == "figures":
+            return one("SELECT COUNT(*) c FROM figure WHERE project_id IS ?", (pid,))
+        if scope == "runs":
+            return one("SELECT COUNT(*) c FROM analysis_run WHERE project_id IS ?", (pid,))
+        if scope == "screening":
+            return one("SELECT COUNT(*) c FROM screen s JOIN record r "
+                       "ON r.id = s.record_id WHERE r.project_id IS ?", (pid,))
+        if scope == "extraction":
+            return (one("SELECT COUNT(*) c FROM extraction e JOIN record r "
+                        "ON r.id = e.record_id WHERE r.project_id IS ?", (pid,))
+                    + one("SELECT COUNT(*) c FROM rob rb JOIN record r "
+                          "ON r.id = rb.record_id WHERE r.project_id IS ?", (pid,)))
+        if scope == "corpus":
+            return one("SELECT COUNT(*) c FROM record WHERE project_id IS ?", (pid,))
+        if scope == "datasets":
+            return one("SELECT COUNT(*) c FROM dataset WHERE project_id IS ?", (pid,))
+        if scope == "cache":
+            try:
+                return len(os.listdir(config.CACHE_DIR))
+            except OSError:
+                return 0
+        if scope == "everything":
+            return sum(_reset_count(k) for k in RESET_SCOPES if k != "everything")
+        return 0
+
+    @app.post("/api/reset")
+    def do_reset():
+        b = request.json or {}
+        scope = b.get("scope")
+        if scope not in RESET_SCOPES:
+            return jsonify({"error": f"Unknown scope {scope!r}."}), 400
+        if b.get("confirm") is not True:
+            return jsonify({"error": "This needs an explicit confirmation.",
+                            "would_delete": _reset_count(scope)}), 400
+        n = _reset_count(scope)
+        targets = [scope] if scope != "everything" else \
+            [k for k in RESET_SCOPES if k != "everything"]
+        pid = active_project()
+
+        # Gather paths before changing the ledger. Filesystem deletion cannot
+        # participate in SQLite's transaction, so database state is committed
+        # atomically first and best-effort file cleanup follows.
+        figure_files = []
+        dataset_files = []
+        if "figures" in targets:
+            figure_files = [f.get("path") for f in
+                            db.query("SELECT path FROM figure WHERE project_id IS ?", (pid,))
+                            if f.get("path")]
+        if "datasets" in targets:
+            dataset_files = [d.get("path") for d in
+                             db.query("SELECT path FROM dataset WHERE project_id IS ?", (pid,))
+                             if d.get("path")]
+
+        with db.transaction():
+            for t in targets:
+                if t == "figures":
+                    db.exec_("DELETE FROM figure WHERE project_id IS ?", (pid,))
+                elif t == "runs":
+                    db.exec_("DELETE FROM analysis_run WHERE project_id IS ?", (pid,))
+                elif t == "screening":
+                    db.exec_("DELETE FROM resolution WHERE record_id IN "
+                             "(SELECT id FROM record WHERE project_id IS ?)", (pid,))
+                    db.exec_("DELETE FROM screen WHERE record_id IN "
+                             "(SELECT id FROM record WHERE project_id IS ?)", (pid,))
+                elif t == "extraction":
+                    db.exec_("DELETE FROM extraction WHERE record_id IN "
+                             "(SELECT id FROM record WHERE project_id IS ?)", (pid,))
+                    db.exec_("DELETE FROM rob WHERE record_id IN "
+                             "(SELECT id FROM record WHERE project_id IS ?)", (pid,))
+                elif t == "corpus":
+                    db.exec_("DELETE FROM record WHERE project_id IS ?", (pid,))
+                    db.exec_("DELETE FROM harvest_query WHERE project_id IS ?", (pid,))
+                elif t == "datasets":
+                    db.exec_("DELETE FROM dataset_op WHERE dataset_id IN "
+                             "(SELECT id FROM dataset WHERE project_id IS ?)", (pid,))
+                    db.exec_("DELETE FROM dataset WHERE project_id IS ?", (pid,))
+
+        if "figures" in targets:
+            for path in figure_files:
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+        if "datasets" in targets:
+            datasets._cache.clear()
+            for path in dataset_files:
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+        if "cache" in targets:
+            try:
+                names = os.listdir(config.CACHE_DIR)
+            except OSError:
+                names = []
+            for name in names:
+                try:
+                    path = os.path.join(config.CACHE_DIR, name)
+                    if os.path.isfile(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+        return jsonify({"ok": True, "scope": scope, "deleted": n})
+
+
     return app
