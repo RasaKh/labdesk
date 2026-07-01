@@ -1,4 +1,5 @@
-"""HTTP surface: shell, datasets, and statistics.
+"""
+HTTP surface.
 
 Every route takes a spec and returns JSON. The browser never sends code,
 never sends SQL and never sends a command line; it sends the id of a
@@ -7,15 +8,17 @@ registry entry plus values for that entry's declared fields.
 
 import json
 import os
+import shutil
+import time
 from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
-from . import (APP_NAME, APP_TAGLINE, APP_VERSION, analysis_guide, config, datasets, db,
-               harvest, library, plots_registry, projects, reporting, screening,
-               plots_run, stats_registry, stats_run)
-from .jobs import JOBS
+from . import (APP_NAME, APP_TAGLINE, APP_VERSION, analysis_guide, config, datasets, db, harvest,
+               jobs, library, plots_registry, plots_run, projects, reporting,
+               screening, stats_registry, stats_run)
+from .jobs import BUS, JOBS, sse
 
 _PROXY_HEADERS = ("X-Forwarded-For", "X-Real-IP", "Forwarded", "CF-Connecting-IP")
 
@@ -69,6 +72,22 @@ def create_app():
         q = request.args.get("project")
         return q if q is not None else active_project()
 
+    def _inside(path, root):
+        try:
+            path = os.path.realpath(path)
+            root = os.path.realpath(root)
+            return os.path.commonpath([path, root]) == root
+        except (OSError, ValueError):
+            return False
+
+    def _loopback_request():
+        """True only for a browser on this machine talking to us directly.
+        Behind a reverse proxy every request arrives from 127.0.0.1, so a
+        forwarding header means the real client is somewhere else."""
+        if any(request.headers.get(h) for h in _PROXY_HEADERS):
+            return False
+        return request.remote_addr in ("127.0.0.1", "::1", None)
+
     def _public_config():
         # API credentials are write-only from the browser.  LabDesk may be
         # deliberately bound to a LAN address, and bootstrap data must not turn
@@ -87,29 +106,13 @@ def create_app():
         return db.one("SELECT * FROM analysis_run WHERE id=? AND project_id IS ?",
                       (run_id, scope(body)))
 
-    def _record_in_scope(record_id, body=None):
-        return db.one("SELECT * FROM record WHERE id=? AND project_id IS ?",
-                      (record_id, scope(body)))
-
     def _figure_in_scope(fig_id, body=None):
         return db.one("SELECT * FROM figure WHERE id=? AND project_id IS ?",
                       (fig_id, scope(body)))
 
-    def _inside(path, root):
-        try:
-            path = os.path.realpath(path)
-            root = os.path.realpath(root)
-            return os.path.commonpath([path, root]) == root
-        except (OSError, ValueError):
-            return False
-
-    def _loopback_request():
-        """True only for a browser on this machine talking to us directly.
-        Behind a reverse proxy every request arrives from 127.0.0.1, so a
-        forwarding header means the real client is somewhere else."""
-        if any(request.headers.get(h) for h in _PROXY_HEADERS):
-            return False
-        return request.remote_addr in ("127.0.0.1", "::1", None)
+    def _record_in_scope(record_id, body=None):
+        return db.one("SELECT * FROM record WHERE id=? AND project_id IS ?",
+                      (record_id, scope(body)))
 
     # ── shell ────────────────────────────────────────────────────────────
     @app.get("/")
@@ -478,7 +481,6 @@ def create_app():
         db.exec_("DELETE FROM figure WHERE project_id IS ?", (project_id,))
         return jsonify({"ok": True, "deleted": len(rows)})
 
-
     # ── harvest ──────────────────────────────────────────────────────────
     @app.post("/api/harvest")
     def api_harvest():
@@ -698,7 +700,6 @@ def create_app():
         return jsonify(screening.rob_summary(request.args.get("instrument", "rob2"),
                                              scope()))
 
-
     # ── projects ─────────────────────────────────────────────────────────
     @app.get("/api/projects")
     def api_projects():
@@ -846,7 +847,6 @@ def create_app():
             return jsonify({"error": "Not found"}), 404
         return send_file(p, as_attachment=True)
 
-
     # ── wholesale clearing ───────────────────────────────────────────────
     #
     # Everything above deletes one thing. This deletes a whole category, and
@@ -983,5 +983,63 @@ def create_app():
                     pass
         return jsonify({"ok": True, "scope": scope, "deleted": n})
 
+    # ── jobs ─────────────────────────────────────────────────────────────
+    @app.get("/api/jobs")
+    def api_jobs():
+        project_id = scope()
+        live = JOBS.list(project_id)
+        live_ids = {j["id"] for j in live}
+        stored = db.query(
+            "SELECT id,kind,title,status,progress,note,error,started_at,ended_at,project_id "
+            "FROM job WHERE project_id IS ? ORDER BY COALESCE(created_at,started_at) DESC LIMIT 200",
+            (project_id,),
+        )
+        return jsonify(live + [j for j in stored if j["id"] not in live_ids])
+
+    @app.get("/api/jobs/<jid>")
+    def api_job(jid):
+        j = JOBS.get(jid)
+        if j and j.project_id == scope():
+            return jsonify(j.to_dict(with_log=True))
+        stored = JOBS.stored(jid, scope())
+        return jsonify(stored) if stored else (jsonify({"error": "gone"}), 404)
+
+    @app.post("/api/jobs/<jid>/cancel")
+    def api_cancel(jid):
+        j = JOBS.get(jid)
+        if j and j.project_id == scope():
+            j.cancel()
+            return jsonify({"ok": True})
+        return jsonify({"ok": False, "error": "gone"}), 404
+
+    @app.post("/api/jobs/clear")
+    def api_clear():
+        JOBS.clear_finished()
+        return jsonify({"ok": True})
+
+    @app.get("/api/events")
+    def api_events():
+        event_project = scope()
+        def stream():
+            q = BUS.subscribe()
+            try:
+                yield sse({"type": "hello", "t": time.time()})
+                while True:
+                    try:
+                        event = q.get(timeout=20)
+                        if event.get("project_id") in (None, event_project):
+                            yield sse(event)
+                    except Exception:
+                        yield ": keepalive\n\n"
+            finally:
+                BUS.unsubscribe(q)
+        return Response(stream(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.get("/api/health")
+    def health():
+        return jsonify({"ok": True, "version": APP_VERSION,
+                        "deps_missing": [d["pip"] for d in config.dependency_report()
+                                         if not d["ok"] and d["required"]]})
 
     return app
