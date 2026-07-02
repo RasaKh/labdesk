@@ -1,4 +1,4 @@
-"""Explicitly project-scoped v1 HTTP contracts: analysis workflows and report snapshots."""
+"""Explicitly project-scoped v1 HTTP contracts."""
 
 from __future__ import annotations
 
@@ -321,5 +321,94 @@ def create_blueprint():
                 body.get("narrative", ""))), 201
         except ValueError as exc:
             return _error("invalid_selection", str(exc), 422)
+
+    @bp.get("/projects/<pid>/search-executions")
+    def search_executions(pid):
+        from . import evidence
+        if not _project(pid):
+            return _error("not_found", "Project not found.", 404)
+        return jsonify({"items": evidence.search_executions(pid)})
+
+    @bp.get("/projects/<pid>/search-executions/<sid>/hits")
+    def retrieval_hits(pid, sid):
+        from . import evidence
+        try:
+            return jsonify({"items": evidence.retrieval_hits(pid, sid)})
+        except KeyError as exc:
+            return _error("not_found", str(exc), 404)
+
+    @bp.post("/projects/<pid>/records/<rid>/report")
+    def ensure_evidence_report(pid, rid):
+        from . import evidence
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(evidence.ensure_report(
+                pid, rid, body.get("report_kind", "publication"))), 201
+        except KeyError as exc:
+            return _error("not_found", str(exc), 404)
+
+    @bp.get("/projects/<pid>/studies")
+    def list_studies(pid):
+        from . import evidence
+        if not _project(pid):
+            return _error("not_found", "Project not found.", 404)
+        return jsonify({"items": evidence.studies(pid)})
+
+    @bp.post("/projects/<pid>/studies")
+    def create_study(pid):
+        from . import evidence
+        if not _project(pid):
+            return _error("not_found", "Project not found.", 404)
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(evidence.create_study(
+                pid, body.get("label", ""), body.get("report_ids") or [],
+                body.get("relationship", "primary"))), 201
+        except ValueError as exc:
+            return _error("invalid_study", str(exc), 422)
+
+    @bp.get("/projects/<pid>/screening-events")
+    def screening_events(pid):
+        if not _project(pid):
+            return _error("not_found", "Project not found.", 404)
+        clauses = ["project_id=?"]
+        args = [pid]
+        for query_name, column in (("record_id", "record_id"), ("stage", "stage"),
+                                   ("reviewer", "reviewer")):
+            value = request.args.get(query_name)
+            if value:
+                clauses.append(f"{column}=?")
+                args.append(value)
+        try:
+            limit = max(1, min(int(request.args.get("limit", 200)), 1000))
+        except ValueError:
+            return _error("invalid_limit", "Limit must be an integer.", 422)
+        rows = db.query("SELECT * FROM screening_event WHERE " + " AND ".join(clauses) +
+                        " ORDER BY created_at DESC LIMIT ?", (*args, limit))
+        return jsonify({"items": rows})
+
+    @bp.get("/backups")
+    def backups():
+        from . import backup
+        return jsonify({"items": backup.listing()})
+
+    @bp.post("/backups")
+    def create_backup():
+        from . import backup
+        try:
+            return jsonify(backup.create()), 201
+        except Exception as exc:
+            return _error("backup_failed", f"{type(exc).__name__}: {exc}", 422)
+
+    @bp.post("/backups/verify")
+    def verify_backup():
+        from . import backup
+        body = request.get_json(silent=True) or {}
+        path = os.path.realpath(str(body.get("path") or ""))
+        root = os.path.realpath(config.BACKUP_DIR)
+        if not path or os.path.commonpath([path, root]) != root:
+            return _error("invalid_backup", "Backup must be inside LabDesk's backup directory.", 422)
+        result = backup.verify(path)
+        return jsonify(result), (200 if result["ok"] else 422)
 
     return bp
