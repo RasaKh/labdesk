@@ -1,4 +1,4 @@
-"""Explicitly project-scoped v1 HTTP contracts: dataset revisions, analysis, jobs, exports."""
+"""Explicitly project-scoped v1 HTTP contracts: analysis workflows and report snapshots."""
 
 from __future__ import annotations
 
@@ -275,5 +275,51 @@ def create_blueprint():
             return _error("not_found", str(exc), 404)
         except Exception as exc:
             return _error("export_failed", f"{type(exc).__name__}: {exc}", 422)
+
+    @bp.get("/projects/<pid>/analysis-drafts")
+    def analysis_drafts(pid):
+        from . import workflow
+        return jsonify({"items": workflow.list_drafts(pid)})
+
+    @bp.post("/projects/<pid>/analysis-drafts")
+    def save_analysis_draft(pid):
+        from . import workflow
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(workflow.save_draft(pid, body.get("name", "Primary analysis"),
+                                               body.get("spec") or {},
+                                               body.get("expected_revision"))), 201
+        except workflow.RevisionConflict as exc:
+            return _error("revision_conflict", str(exc), 409)
+        except ValueError as exc:
+            return _error("invalid_draft", str(exc), 422)
+
+    @bp.get("/projects/<pid>/hypothesis-families")
+    def hypothesis_families(pid):
+        from . import workflow
+        return jsonify({"items": workflow.list_families(pid)})
+
+    @bp.post("/projects/<pid>/hypothesis-families")
+    def create_hypothesis_family(pid):
+        from . import workflow
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(workflow.create_family(
+                pid, body.get("name", ""), body.get("alpha", config.get("alpha", .05)),
+                body.get("correction", config.get("multiplicity_default", "holm")),
+                body.get("members") or [], bool(body.get("freeze")))), 201
+        except ValueError as exc:
+            return _error("invalid_family", str(exc), 422)
+
+    @bp.post("/projects/<pid>/report-snapshots")
+    def create_report_snapshot(pid):
+        from . import workflow
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(workflow.create_report_snapshot(
+                pid, body.get("title", ""), body.get("selection") or {},
+                body.get("narrative", ""))), 201
+        except ValueError as exc:
+            return _error("invalid_selection", str(exc), 422)
 
     return bp
