@@ -1,17 +1,22 @@
-"""Data workbench: stable identifiers through content hashing.
+"""Data workbench: importing files onto disk with content-hashed identity.
 
-Before any import logic exists, datasets need identity you can trust. The sha256
-of the raw file is the loading identity; the dictionary hash pins the variable
-semantics; the in-memory frame is a bounded LRU keyed by that id.
+Industry formats and delimited files are read into memory, hashed, and stored
+as parquet (falling back to csv) under the data directory. Identifier-looking
+columns stay strings so leading zeros survive.
 """
 
 import csv
 import hashlib
 import json
+import os
 import re
+import time
 from collections import OrderedDict
 
 import pandas as pd
+
+from . import db
+from .config import DATA_DIR, get
 
 _cache = OrderedDict()
 _CACHE_MAX = 8
@@ -76,3 +81,118 @@ def _cache_put(ds_id, df):
     _cache.move_to_end(ds_id)
     while len(_cache) > _CACHE_MAX:
         _cache.popitem(last=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Import
+# ─────────────────────────────────────────────────────────────────────────
+
+READERS = {
+    ".csv":  lambda p, **k: pd.read_csv(p, na_values=MISSING_TOKENS, keep_default_na=True, **k),
+    ".tsv":  lambda p, **k: pd.read_csv(p, sep="\t", na_values=MISSING_TOKENS, **k),
+    ".txt":  lambda p, **k: pd.read_csv(p, sep=None, engine="python", na_values=MISSING_TOKENS, **k),
+    ".xlsx": lambda p, **k: pd.read_excel(p, na_values=MISSING_TOKENS, **k),
+    ".xls":  lambda p, **k: pd.read_excel(p, na_values=MISSING_TOKENS, **k),
+    ".json": lambda p, **k: pd.read_json(p, **k),
+    ".parquet": lambda p, **k: pd.read_parquet(p, **k),
+}
+
+
+def read_any(path, **kw):
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".sav", ".dta", ".por"):
+        import pyreadstat  # optional
+        if ext == ".sav":
+            df, _ = pyreadstat.read_sav(path)
+        elif ext == ".dta":
+            df, _ = pyreadstat.read_dta(path)
+        else:
+            df, _ = pyreadstat.read_por(path)
+        return df
+    if ext in (".csv", ".tsv", ".txt"):
+        header, delimiter = _check_delimited_header(path, "\t" if ext == ".tsv" else None)
+        # Identifier-looking columns remain strings so leading zeros survive.
+        # A user can change the semantic kind later without recovering lost bytes.
+        dtype = {name: "string" for name in header if ID_HINTS.search(name)}
+        options = {"sep": delimiter, "na_values": MISSING_TOKENS,
+                   "keep_default_na": True, "dtype": dtype}
+        options.update(kw)
+        return pd.read_csv(path, **options)
+    reader = READERS.get(ext)
+    if not reader:
+        raise ValueError(
+            f"No reader for {ext or 'a file with no extension'}. "
+            "Supported: csv, tsv, txt, xlsx, xls, json, parquet, sav, dta."
+        )
+    return reader(path, **kw)
+
+
+def import_file(path, name=None, notes="", project_id=None, source=None):
+    df = read_any(path)
+    df.columns = [str(c).strip() for c in df.columns]
+    dup = df.columns[df.columns.duplicated()].unique().tolist()
+    if dup:
+        raise ValueError(
+            "Column names collide after trimming whitespace: " + ", ".join(map(str, dup)) +
+            ". Rename them in the source file before import."
+        )
+    ds_id = db.new_id("ds_")
+    store = os.path.join(DATA_DIR, ds_id + ".parquet")
+    try:
+        df.to_parquet(store)
+    except Exception:
+        store = os.path.join(DATA_DIR, ds_id + ".csv")
+        df.to_csv(store, index=False)
+    sha = sha256_of_frame(df)
+    dic = infer_dictionary(df)
+    dic_sha = sha256_of_dictionary(dic)
+    db.insert("dataset", {
+        "id": ds_id, "project_id": project_id,
+        "name": name or os.path.basename(path), "path": store,
+        "source": source or path, "sha256": sha, "n_rows": len(df), "n_cols": df.shape[1],
+        "dictionary": json.dumps(dic), "dictionary_sha": dic_sha,
+        "created_at": time.time(), "notes": notes,
+    })
+    _cache_put(ds_id, df)
+    # Project-owned imports immediately gain an immutable baseline version.
+    # Legacy/unfiled imports remain readable and are versioned when adopted.
+    if project_id:
+        from . import revisions
+        revisions.ensure_baseline(ds_id)
+    return ds_id
+
+
+def load(ds_id):
+    if ds_id in _cache:
+        df = _cache[ds_id]
+        _cache.move_to_end(ds_id)
+        return df
+    row = db.one("SELECT * FROM dataset WHERE id=?", (ds_id,))
+    if not row:
+        raise KeyError(f"No dataset {ds_id}. It may have been removed.")
+    df = read_any(row["path"])
+    _cache_put(ds_id, df)
+    return df
+
+
+def meta(ds_id):
+    row = db.one("SELECT * FROM dataset WHERE id=?", (ds_id,))
+    if not row:
+        return None
+    row["dictionary"] = json.loads(row["dictionary"] or "{}")
+    if not row.get("dictionary_sha"):
+        row["dictionary_sha"] = sha256_of_dictionary(row["dictionary"])
+        db.exec_("UPDATE dataset SET dictionary_sha=? WHERE id=?",
+                 (row["dictionary_sha"], ds_id))
+    return row
+
+
+def list_datasets(project_id=None):
+    """Scoped to a project. Passing None returns the unfiled ones, which is
+    what an existing database looks like before anything is assigned."""
+    rows = db.query("SELECT id,name,n_rows,n_cols,sha256,created_at,project_id "
+                    "FROM dataset WHERE project_id IS ? ORDER BY created_at DESC",
+                    (project_id,))
+    for r in rows:
+        r["runs"] = db.runs_on_dataset(r["sha256"], project_id)
+    return rows
