@@ -1,8 +1,9 @@
-"""Data workbench: importing files onto disk with content-hashed identity.
+"""Data workbench: the variable dictionary and missingness.
 
-Industry formats and delimited files are read into memory, hashed, and stored
-as parquet (falling back to csv) under the data directory. Identifier-looking
-columns stay strings so leading zeros survive.
+The dictionary is inferred once on import and then edited by hand, because
+guessing that a 0/1 column is continuous is the single most common way an
+analysis silently goes wrong. Missingness reports column-level and pattern
+coverage.
 """
 
 import csv
@@ -196,3 +197,124 @@ def list_datasets(project_id=None):
     for r in rows:
         r["runs"] = db.runs_on_dataset(r["sha256"], project_id)
     return rows
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Variable dictionary
+# ─────────────────────────────────────────────────────────────────────────
+
+def infer_kind(name, s):
+    n = s.dropna()
+    if not len(n):
+        return "unknown"
+    if n.nunique() == 1:
+        return "constant"
+    if ID_HINTS.search(name) and n.nunique() > 0.9 * max(1, len(n)):
+        return "id"
+    if pd.api.types.is_datetime64_any_dtype(s) or TIME_HINTS.search(name):
+        try:
+            pd.to_datetime(n.head(50), errors="raise")
+            return "time"
+        except Exception:
+            pass
+    nun = n.nunique()
+    if pd.api.types.is_numeric_dtype(s):
+        vals = set(pd.unique(n))
+        if nun == 2 and vals <= {0, 1, 0.0, 1.0, True, False}:
+            return "binary"
+        if nun <= 2:
+            return "binary"
+        # Small integer sets are usually coded factors, not measurements.
+        try:
+            all_int = bool(n.apply(lambda v: float(v).is_integer()).all())
+        except (TypeError, ValueError):
+            all_int = False
+        if nun <= 10 and all_int:
+            return "ordinal"
+        return "continuous"
+    if nun == 2:
+        return "binary"
+    if nun <= 20:
+        return "categorical"
+    return "text"
+
+
+def infer_dictionary(df):
+    dic = {}
+    for c in df.columns:
+        s = df[c]
+        kind = infer_kind(c, s)
+        entry = {
+            "column_id": "col_" + hashlib.sha256(str(c).encode("utf-8")).hexdigest()[:12],
+            "label": c,
+            "kind": kind,
+            "unit": "",
+            "dtype": str(s.dtype),
+            "n_missing": int(s.isna().sum()),
+            "pct_missing": round(100 * float(s.isna().mean()), 2),
+            "n_unique": int(s.nunique(dropna=True)),
+            "role": "",
+            "notes": "",
+            "reviewed": False,
+            "positive_level": "",
+            "reference_level": "",
+            "event_level": "",
+        }
+        if kind in ("categorical", "binary", "ordinal"):
+            vc = s.value_counts(dropna=True).head(30)
+            entry["levels"] = [[str(k), int(v)] for k, v in vc.items()]
+        if kind == "continuous" and pd.api.types.is_numeric_dtype(s):
+            n = s.dropna()
+            if len(n):
+                entry["summary"] = {
+                    "mean": float(n.mean()), "sd": float(n.std(ddof=1)) if len(n) > 1 else None,
+                    "min": float(n.min()), "q1": float(n.quantile(.25)),
+                    "median": float(n.median()), "q3": float(n.quantile(.75)),
+                    "max": float(n.max()),
+                }
+        dic[c] = entry
+    return dic
+
+
+def set_dictionary(ds_id, dic):
+    row = db.one("SELECT project_id,current_version_id FROM dataset WHERE id=?", (ds_id,))
+    if row and row.get("project_id") and row.get("current_version_id"):
+        from . import revisions
+        return revisions.create_dictionary(row["project_id"], ds_id, dic)["payload"]
+    db.exec_("UPDATE dataset SET dictionary=?, dictionary_sha=? WHERE id=?",
+             (json.dumps(dic), sha256_of_dictionary(dic), ds_id))
+    return dic
+
+
+def columns_of_kind(ds_id, kinds):
+    m = meta(ds_id)
+    if not m:
+        return []
+    if isinstance(kinds, str):
+        kinds = [kinds]
+    if "any" in kinds:
+        return list(m["dictionary"].keys())
+    return [c for c, d in m["dictionary"].items() if d.get("kind") in kinds]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Missingness
+# ─────────────────────────────────────────────────────────────────────────
+
+def missingness(ds_id):
+    df = load(ds_id)
+    per_col = [{"column": c,
+                "n_missing": int(df[c].isna().sum()),
+                "pct": round(100 * float(df[c].isna().mean()), 2)}
+               for c in df.columns]
+    rows_complete = int(df.notna().all(axis=1).sum())
+    # Pattern table: the distinct presence/absence patterns and their counts.
+    pat = df.notna().astype(int).astype(str).agg("".join, axis=1).value_counts().head(15)
+    return {
+        "per_column": sorted(per_col, key=lambda r: -r["pct"]),
+        "rows_total": len(df),
+        "rows_complete": rows_complete,
+        "pct_complete_case": round(100 * rows_complete / max(1, len(df)), 2),
+        "patterns": [{"pattern": k, "n": int(v)} for k, v in pat.items()],
+        "columns": list(df.columns),
+    }
