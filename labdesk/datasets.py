@@ -1,19 +1,22 @@
-"""Data workbench: the variable dictionary and missingness.
+"""
+Data workbench.
 
-The dictionary is inferred once on import and then edited by hand, because
-guessing that a 0/1 column is continuous is the single most common way an
-analysis silently goes wrong. Missingness reports column-level and pattern
-coverage.
+Datasets live on disk under the config directory and are cached in memory by
+sha256. The variable dictionary is inferred once on import and then edited by
+hand, because guessing that a 0/1 column is continuous is the single most
+common way an analysis silently goes wrong.
 """
 
-import csv
 import hashlib
+import csv
+import io
 import json
 import os
 import re
 import time
 from collections import OrderedDict
 
+import numpy as np
 import pandas as pd
 
 from . import db
@@ -318,3 +321,146 @@ def missingness(ds_id):
         "patterns": [{"pattern": k, "n": int(v)} for k, v in pat.items()],
         "columns": list(df.columns),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Pure transform primitives. Callers that persist a transformed dataset must
+#  also persist the corresponding dataset_op; this function itself never
+#  mutates a stored dataset or claims an audit entry was written.
+# ─────────────────────────────────────────────────────────────────────────
+
+TRANSFORMS = ["log", "log10", "log1p", "sqrt", "zscore", "rank", "inverse",
+              "boxcox", "yeojohnson", "winsorize", "center", "minmax"]
+
+
+def apply_transform(df, col, how, params=None):
+    params = params or {}
+    s = pd.to_numeric(df[col], errors="coerce")
+    if how == "log":
+        return np.log(s.where(s > 0))
+    if how == "log10":
+        return np.log10(s.where(s > 0))
+    if how == "log1p":
+        return np.log1p(s.where(s > -1))
+    if how == "sqrt":
+        return np.sqrt(s.where(s >= 0))
+    if how == "zscore":
+        if not np.isfinite(s.std(ddof=1)) or s.std(ddof=1) == 0:
+            raise ValueError("Z-score needs a variable with non-zero variation.")
+        return (s - s.mean()) / s.std(ddof=1)
+    if how == "center":
+        return s - s.mean()
+    if how == "rank":
+        return s.rank()
+    if how == "inverse":
+        return 1.0 / s.where(s != 0)
+    if how == "minmax":
+        if s.max() == s.min():
+            raise ValueError("Min-max scaling needs a variable with non-zero range.")
+        return (s - s.min()) / (s.max() - s.min())
+    if how == "winsorize":
+        lo = params.get("lower", 0.05)
+        hi = params.get("upper", 0.95)
+        return s.clip(s.quantile(lo), s.quantile(hi))
+    if how in ("boxcox", "yeojohnson"):
+        from scipy import stats
+        clean = s.dropna()
+        if how == "boxcox":
+            if (clean <= 0).any():
+                raise ValueError("Box-Cox needs strictly positive values. Use Yeo-Johnson.")
+            vals, _lam = stats.boxcox(clean)
+        else:
+            vals, _lam = stats.yeojohnson(clean)
+        out = pd.Series(np.nan, index=s.index)
+        out.loc[clean.index] = vals
+        return out
+    raise ValueError(f"Unknown transform {how}.")
+
+
+OUTLIER_METHODS = ["iqr", "zscore", "modified_zscore", "grubbs", "mahalanobis"]
+
+
+def find_outliers(df, cols, method="iqr", threshold=None):
+    idx = pd.Index([])
+    if method == "mahalanobis":
+        sub = df[cols].apply(pd.to_numeric, errors="coerce").dropna()
+        if sub.shape[1] < 2 or len(sub) <= sub.shape[1]:
+            return []
+        cov = np.cov(sub.values, rowvar=False)
+        inv = np.linalg.pinv(cov)
+        mu = sub.values.mean(axis=0)
+        d = np.einsum("ij,jk,ik->i", sub.values - mu, inv, sub.values - mu)
+        from scipy import stats
+        crit = stats.chi2.ppf(threshold or 0.999, df=sub.shape[1])
+        return sub.index[d > crit].tolist()
+    for c in cols:
+        s = pd.to_numeric(df[c], errors="coerce")
+        if method == "iqr":
+            k = threshold or 1.5
+            q1, q3 = s.quantile(.25), s.quantile(.75)
+            iqr = q3 - q1
+            hit = s[(s < q1 - k * iqr) | (s > q3 + k * iqr)].index
+        elif method == "zscore":
+            k = threshold or 3.0
+            z = (s - s.mean()) / s.std(ddof=1)
+            hit = s[z.abs() > k].index
+        elif method == "modified_zscore":
+            k = threshold or 3.5
+            med = s.median()
+            mad = (s - med).abs().median()
+            mz = 0.6745 * (s - med) / (mad if mad else np.nan)
+            hit = s[mz.abs() > k].index
+        elif method == "grubbs":
+            from scipy import stats
+            n = s.dropna()
+            if len(n) < 3:
+                hit = pd.Index([])
+            else:
+                z = (n - n.mean()).abs() / n.std(ddof=1)
+                g = z.max()
+                a = threshold or 0.05
+                t = stats.t.ppf(1 - a / (2 * len(n)), len(n) - 2)
+                crit = (len(n) - 1) / np.sqrt(len(n)) * np.sqrt(t**2 / (len(n) - 2 + t**2))
+                hit = pd.Index([z.idxmax()]) if g > crit else pd.Index([])
+        else:
+            hit = pd.Index([])
+        idx = idx.union(hit)
+    return idx.tolist()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  De-identification check
+#
+#  Not a substitute for a DPO, and it says so. It catches the obvious
+#  things before a dataset gets copied somewhere it should not be.
+# ─────────────────────────────────────────────────────────────────────────
+
+HIPAA_PATTERNS = [
+    ("Name", r"(^|_)(name|surname|firstname|lastname|fullname)(_|$)"),
+    ("Geography finer than state", r"(^|_)(address|street|postcode|zip|postal|city|town)(_|$)"),
+    ("Dates", r"(^|_)(dob|birth|admission|discharge|death|date)(_|$)"),
+    ("Telephone", r"(^|_)(phone|tel|mobile|fax)(_|$)"),
+    ("Email", r"(^|_)(email|e_mail)(_|$)"),
+    ("Identifiers", r"(^|_)(ssn|nhs|mrn|insurance|policy|licence|license|passport)(_|$)"),
+    ("Device or account", r"(^|_)(device|serial|account|ip|url|biometric)(_|$)"),
+]
+
+
+def deident_check(ds_id, quasi_identifiers=None):
+    df = load(ds_id)
+    flags = []
+    for label, pat in HIPAA_PATTERNS:
+        rx = re.compile(pat, re.I)
+        hits = [c for c in df.columns if rx.search(c)]
+        if hits:
+            flags.append({"category": label, "columns": hits})
+    out = {"flags": flags, "n_rows": len(df)}
+    qi = quasi_identifiers or []
+    if qi:
+        sizes = df.groupby(qi, dropna=False).size()
+        out["k_anonymity"] = int(sizes.min()) if len(sizes) else 0
+        out["unique_rows"] = int((sizes == 1).sum())
+        out["quasi_identifiers"] = qi
+    out["disclaimer"] = ("Pattern matching on column names and a k-anonymity count. "
+                         "It does not read cell contents and it is not a legal review.")
+    return out
