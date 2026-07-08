@@ -1,8 +1,9 @@
 """The handbook.
 
-Reference material that travels with the tool: the thing that tells
-you how to run a review sits next to the thing that runs it. Entries are
-plain data, starting with the overview of how the pieces fit together."""
+Reference material that travels with the tool, so the thing that tells you
+how to run a review sits next to the thing that runs it. Two halves: doing a
+review (the whole arc, then specific search and screening steps) and the
+statistics. Entries are plain data; `body` is a small markdown subset."""
 
 SECTIONS = [
     ("Start here", "haem"),
@@ -138,5 +139,187 @@ it. Pick a size preset that matches your target journal: 89 mm single column,
 [Report pane](#pane:report). Generate the methods paragraph, tick through the
 relevant checklist, and build the bundle.
 """, reading="5 min", panes=["data", "stats", "figures", "report"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("review-arc", "A systematic review, start to finish", "Doing a review",
+  "The whole arc in order, with the pane that handles each step.",
+  """
+A review has an order, and most of the pain in doing one comes from doing the
+steps out of order. This is the order.
+
+## 0. Write the protocol first
+
+Before any searching. Define the question in PICO form, the inclusion and
+exclusion criteria, the outcomes, and the analysis plan. Register it on
+PROSPERO.
+
+This is not bureaucracy. A protocol written after the search is a protocol
+written knowing what the literature contains, which is how reviews end up
+answering the question the evidence happens to fit.
+
+> Search PROSPERO from [Harvest](#pane:harvest) first. If your review already
+> exists and is in progress, better to find out now.
+
+Draft the analysis plan from [Report](#pane:report), which produces a
+pre-registration skeleton.
+
+## 1. Build the search
+
+[Harvest](#pane:harvest). One database is never enough for a review. The
+conventional minimum is MEDLINE (via PubMed), Embase, and CENTRAL, plus trial
+registries. Here you have PubMed, Europe PMC, OpenAlex, Crossref, bioRxiv and
+medRxiv, ClinicalTrials.gov and openFDA.
+
+Run each source separately and let the corpus accumulate. See
+[Building a search](#entry:search) for the syntax.
+
+Record the date you searched. You will need it for the PRISMA diagram, and you
+will need to re-run the search before submission if enough time passes.
+
+## 2. Deduplicate
+
+One click in the corpus panel. Duplicates are caught by DOI first, then by
+fuzzy title match within publication year. Cross-source overlap is heavy;
+expect 20-40% of a multi-source corpus to be duplicates.
+
+## 3. Trim, if the search over-reached
+
+If a search came back far wider than intended, the **trim panel** narrows the
+corpus with a preview: it counts what it would remove and shows a sample before
+anything goes. Common trims are records with no abstract, records before a
+cut-off year, and animal-only work.
+
+Be careful here. Trimming after seeing titles is a form of screening, and
+should be done with the same criteria you wrote in the protocol, not by feel.
+
+## 4. Screen titles and abstracts
+
+[Screening](#pane:screen). Keyboard-driven: `i` include, `e` exclude, `m`
+maybe, `s` skip, `u` undo. Undo genuinely deletes the judgement.
+
+Screen liberally at this stage. The cost of wrongly including something is one
+full text to read. The cost of wrongly excluding it is a missing study nobody
+will ever find.
+
+Two reviewers should screen independently. See
+[Dual screening and agreement](#entry:dual).
+
+## 5. Screen full texts
+
+Switch the stage selector to **Full text**. Only records included or marked
+maybe at title/abstract appear.
+
+Now record a **reason** for every exclusion. PRISMA requires reasons at this
+stage and not before, and the reason list feeds straight into the flow diagram.
+
+## 6. Extract
+
+[Synthesis](#pane:synthesis). Pick a form: randomised trial, observational, or
+diagnostic accuracy. Extract into structured fields rather than notes, because
+structured fields convert into effect sizes and notes do not.
+
+Extract in duplicate if you can. If you cannot, extract once and have a second
+person check a sample.
+
+## 7. Judge risk of bias
+
+Same pane. Pick the instrument that matches the design:
+
+| Design | Instrument |
+|---|---|
+| Randomised trial | RoB 2 |
+| Non-randomised intervention study | ROBINS-I |
+| Cohort or case-control | Newcastle-Ottawa |
+| Diagnostic accuracy | QUADAS-2 |
+
+Judge per domain with a written rationale. The overall judgement is derived
+from the domains, not decided separately.
+
+## 8. Synthesise
+
+Convert extractions to effect sizes in the Synthesis pane, then run
+[Meta-analysis](#entry:meta) from the Statistics pane. Or decide not to pool:
+see when that is the right call in the same entry.
+
+## 9. Report
+
+[Report](#pane:report). The PRISMA diagram is drawn from the screening
+database, so it cannot disagree with what you actually did. Work through the
+PRISMA checklist. Export the bundle.
+""", reading="8 min", panes=["harvest", "screen", "synthesis", "report"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("search", "Building a search that finds things", "Doing a review",
+  "PICO, field tags, MeSH, and why sensitivity beats precision here.",
+  """
+A search for a review is not a search for a paper to read. You are trying not
+to miss anything, which means accepting a lot of irrelevant results.
+
+## Start from PICO
+
+Break the question into concepts, then build each concept as a block of
+synonyms joined by `OR`, and join the blocks with `AND`.
+
+```
+(spinal cord injury OR SCI OR myelopathy)
+AND (olfactory ensheathing cell* OR OEC OR olfactory glia)
+AND (transplant* OR graft* OR implant*)
+```
+
+Three or four concept blocks is usually right. More than that and you are
+almost certainly excluding relevant work.
+
+## Use both free text and controlled vocabulary
+
+PubMed indexes with MeSH terms. Controlled vocabulary catches papers whose
+title and abstract use different words; free text catches papers too new to
+have been indexed yet. You want both.
+
+```
+("Spinal Cord Injuries"[Mesh] OR spinal cord injur*[tiab])
+```
+
+- `[tiab]` title and abstract
+- `[Mesh]` indexed subject heading
+- `[Mesh:noexp]` that heading without narrower terms
+- `[pt]` publication type
+- `[dp]` date of publication
+
+## What the controls do
+
+The Harvest pane's fields write into the query for you:
+
+- **Publication types** appends `"Randomized Controlled Trial"[Publication Type]`
+- **Species** appends the human or animal MeSH filter
+- **Abstract only** appends `hasabstract`, which is a reasonable default but
+  will drop conference abstracts and some older records
+- **From / to year** appends a date range
+
+The query actually sent back is shown in the result, so you can paste it into
+the manuscript. You will need it: PRISMA requires the full strategy for at
+least one database.
+
+## Then go wider
+
+Databases are not enough on their own.
+
+- **Trial registries** catch studies that were run and never published, which
+  is exactly the population publication bias removes
+- **Preprints** via bioRxiv and medRxiv
+- **Backward citation chasing** take the reference lists of your included
+  studies. Crossref returns them
+- **Forward citation chasing** who has cited your included studies since.
+  OpenAlex and Europe PMC both give citation counts and links
+
+## Then check what you found is real
+
+Run the **retraction check** in the corpus panel. It queries Crossref, which
+carries the Retraction Watch data, and flags retractions and expressions of
+concern. Citing a retracted trial in a meta-analysis is a real and recurring
+failure, and it is entirely avoidable.
+
+Run **resolve open access** to turn DOIs into legal full-text links via
+Unpaywall, which needs only an email address in Settings.
+""", reading="6 min", panes=["harvest"]),
 
 ]
