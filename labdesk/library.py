@@ -1,9 +1,9 @@
 """The handbook.
 
-Reference material that travels with the tool, so the thing that tells you
-how to run a review sits next to the thing that runs it. Two halves: doing a
-review (the whole arc, then specific search and screening steps) and the
-statistics. Entries are plain data; `body` is a small markdown subset."""
+Reference material that travels with the tool. Two halves: doing a review,
+and statistics. Entries are plain data: `## heading`, `**bold**`, `- bullet`,
+`> callout`, `[Pane name](#pane:stats)`, and tables. This stage covers the
+screening and risk-of-bias half of the review arc."""
 
 SECTIONS = [
     ("Start here", "haem"),
@@ -321,5 +321,164 @@ failure, and it is entirely avoidable.
 Run **resolve open access** to turn DOIs into legal full-text links via
 Unpaywall, which needs only an email address in Settings.
 """, reading="6 min", panes=["harvest"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("dual", "Dual screening and agreement", "Doing a review",
+  "Two reviewers, blind to each other, then resolve the conflicts.",
+  """
+Single-reviewer screening misses studies. The error rate is not small, and it
+is not random: a tired reviewer at record 400 excludes differently from the
+same reviewer at record 40.
+
+## How it works here
+
+The Screening pane has a **reviewer selector**. Each reviewer screens the same
+queue independently under their own name. Decisions are stored per reviewer, so
+neither overwrites the other.
+
+Switch on **blind mode** and you will not see whether the other reviewer has
+already judged a record, which is the point of doing it twice.
+
+## Agreement
+
+Once two reviewers have overlapping decisions, the agreement panel reports:
+
+- **Percentage agreement**, which always looks good and means little, because
+  two reviewers excluding 95% of records agree 90% of the time by chance alone
+- **Cohen's kappa**, which corrects for that chance agreement
+
+| Kappa | Conventional reading |
+|---|---|
+| below 0.20 | poor |
+| 0.21 to 0.40 | fair |
+| 0.41 to 0.60 | moderate |
+| 0.61 to 0.80 | substantial |
+| above 0.80 | almost perfect |
+
+Below about 0.6 at title and abstract, stop and re-read the inclusion criteria
+together. Low kappa nearly always means the criteria are ambiguous, not that
+one reviewer is careless.
+
+## Conflicts
+
+The conflicts list shows every record the two reviewers judged differently.
+Resolve them by discussion, and record the resolution. A third reviewer
+adjudicates if discussion does not settle it.
+
+Report in the manuscript: how many reviewers, whether independently, the kappa,
+and how disagreements were resolved. All four are PRISMA items.
+
+## A note on effort
+
+Full dual screening of a 4000-record corpus is genuinely expensive. Accepted
+compromises, in descending order of rigour:
+
+1. Both reviewers screen everything, independently
+2. Both screen everything at full text, one screens title and abstract with the
+   second checking a random 20%
+3. One screens, a second checks all exclusions
+
+Anything less than option 3 should be declared as a limitation.
+""", reading="4 min", panes=["screen"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("rob", "Risk of bias, and what to do with it", "Doing a review",
+  "Which instrument, judged how, and how it enters the synthesis.",
+  """
+Risk of bias is about the **study**, not the paper. A beautifully written paper
+can report a badly randomised trial. Judge what was done.
+
+## Pick the right instrument
+
+| Design | Instrument | Judgements |
+|---|---|---|
+| Randomised trial | RoB 2 | low / some concerns / high |
+| Non-randomised intervention | ROBINS-I | low / moderate / serious / critical |
+| Cohort, case-control | Newcastle-Ottawa | stars, out of 9 |
+| Diagnostic accuracy | QUADAS-2 | low / high / unclear, bias and applicability separately |
+
+ROBINS-I benchmarks against a hypothetical target trial, so a non-randomised
+study can at best be low risk, never "as good as randomised".
+
+## Judge per domain
+
+Each domain gets its own judgement with a written rationale. The overall
+judgement is then **derived**: RoB 2 is high overall if any domain is high;
+ROBINS-I takes the worst domain. It is not an average and it is not a vibe.
+
+Write the rationale even when it is "not reported", because "not reported" is
+itself the finding and reviewers will ask.
+
+## Then actually use it
+
+Assessing risk of bias and then ignoring it is the most common thing reviews
+do with it. Options, in rough order of preference:
+
+- **Stratify** the meta-analysis by risk of bias and see whether the estimate
+  moves. If low-risk studies show a smaller effect, say so prominently
+- **Sensitivity analysis** excluding high-risk studies
+- **Downgrade the certainty** of the evidence in GRADE terms
+- **Do not pool at all** if most studies are at high risk
+
+The traffic-light plot in the Synthesis pane goes in the manuscript. The
+summary bar goes next to it.
+
+> A meta-analysis of six badly conducted trials is a precise estimate of a
+> biased quantity. Precision is not accuracy, and pooling does not launder
+> bias.
+""", reading="4 min", panes=["synthesis"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("extraction", "From extracted numbers to effect sizes", "Doing a review",
+  "What to extract so it converts, and what the conversion does.",
+  """
+Extraction fails at synthesis time when the numbers extracted are not the
+numbers the effect size needs. Extract for the conversion you intend.
+
+## For a continuous outcome
+
+Per arm: **n**, **mean**, **standard deviation**. That is it. From those the
+tool computes:
+
+- **Mean difference** when every study used the same scale
+- **Standardised mean difference** (Hedges' g, with the small-sample
+  correction) when they used different scales
+
+If a paper reports median and IQR, or a standard error, or a confidence
+interval, note it in the notes field rather than guessing. Conversion formulas
+exist but they make assumptions, and the assumption should be visible in the
+manuscript.
+
+## For a binary outcome
+
+Per arm: **events** and **total**. From those:
+
+- **Odds ratio**, pooled on the log scale
+- **Risk ratio**, also on the log scale
+- **Risk difference**, on the natural scale
+
+Zero cells get a continuity correction of 0.5, which is the convention and is
+also a distortion; if several studies have zero events, that is a reason to
+consider a different model rather than a bigger correction.
+
+## For diagnostic accuracy
+
+The 2x2: **TP, FP, FN, TN**, at a stated threshold. If a study reports only
+sensitivity, specificity and n, you can usually reconstruct the table.
+
+## Always extract
+
+Regardless of design: the population, the intervention, the comparator, the
+outcome definition, follow-up duration, funding source, and declared conflicts.
+The last two are not decoration; funding source is a documented predictor of
+result direction in several fields.
+
+## The conversion
+
+In Synthesis, choose a measure and press convert. Ratio measures come out on
+the **log scale**, which is what the meta-analysis expects, and are
+exponentiated again for display. The output columns are `study`, `effect`,
+`se`, and that is exactly what [Meta-analysis](#entry:meta) takes as input.
+""", reading="4 min", panes=["synthesis"]),
 
 ]
