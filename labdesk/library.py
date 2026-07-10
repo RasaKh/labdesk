@@ -1,9 +1,9 @@
 """The handbook.
 
-Reference material that travels with the tool. Two halves: doing a review,
-and statistics. Entries are plain data: `## heading`, `**bold**`, `- bullet`,
-`> callout`, `[Pane name](#pane:stats)`, and tables. This stage covers the
-screening and risk-of-bias half of the review arc."""
+Reference material that travels with the tool. Two halves: doing a review
+and statistics, and each pane is named at the point that handles it. Entries
+are plain data rendered by a small markdown subset. This stage completes the
+review half and begins the statistics half."""
 
 SECTIONS = [
     ("Start here", "haem"),
@@ -480,5 +480,160 @@ the **log scale**, which is what the meta-analysis expects, and are
 exponentiated again for display. The output columns are `study`, `effect`,
 `se`, and that is exactly what [Meta-analysis](#entry:meta) takes as input.
 """, reading="4 min", panes=["synthesis"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("meta", "Meta-analysis, and when not to", "Doing a review",
+  "Fixed versus random, heterogeneity, and the pooling decision.",
+  """
+## Should you pool at all?
+
+Ask before you ask anything else. Pooling is only meaningful if the studies
+estimate something close to the same quantity.
+
+Do not pool when:
+
+- The populations, interventions or outcomes are not comparable in a way a
+  clinician would recognise
+- I² is very high and you cannot explain why
+- There are fewer than about three studies, where the between-study variance is
+  essentially unestimable
+- Most studies are at high risk of bias
+
+A narrative synthesis with a forest plot showing individual estimates and **no
+pooled diamond** is a perfectly respectable output, and is often the honest one.
+
+## Fixed effect or random effects
+
+**Fixed effect** assumes every study estimates one identical true effect and
+differences are sampling error alone. Rarely plausible in clinical research.
+
+**Random effects** assumes true effects vary across studies and estimates that
+variance as τ². This is the default here, and should be your default.
+
+Random effects gives smaller studies relatively more weight. That is the
+correct behaviour given its assumptions, and it is also why a random-effects
+pooled estimate is more vulnerable to small-study bias.
+
+## Heterogeneity
+
+| Statistic | What it tells you |
+|---|---|
+| **Q** | A test of whether heterogeneity exceeds chance. Underpowered with few studies, over-powered with many. Do not read its p value as presence or absence |
+| **I²** | The percentage of variability due to real differences rather than chance. A proportion, not an amount |
+| **τ²** | The actual variance of true effects, on the outcome's own scale. This is the one that matters |
+
+Rough I² reading: below 40% probably unimportant, 30-60% moderate, 50-90%
+substantial, above 75% considerable. These overlap deliberately, because the
+number means less than the reason behind it.
+
+**I² does not measure how much the effects differ.** With very large studies,
+tiny real differences produce a high I². Read τ² alongside it.
+
+## The prediction interval
+
+The confidence interval tells you where the **average** effect lies. The
+**prediction interval** tells you where the effect in a new study would
+plausibly fall. If your CI excludes the null and your prediction interval does
+not, the honest summary is that the average effect is positive but a new trial
+could easily find nothing.
+
+It is on by default here. It is often the most informative line on the plot.
+
+## Hartung-Knapp
+
+With few studies, the standard interval is too narrow, because it treats τ² as
+if it were known when it was estimated from five numbers. The Hartung-Knapp
+adjustment widens it appropriately. On by default, and it should stay on below
+about twenty studies.
+
+## Small-study effects
+
+Run the bias panel. Egger's regression, Begg's rank test, trim-and-fill, and a
+contour-enhanced funnel plot.
+
+All of them are underpowered below ten studies. If you have eight studies, a
+non-significant Egger test is not evidence of no publication bias; it is no
+evidence either way, and should be reported as such.
+
+Funnel asymmetry has causes other than publication bias: true heterogeneity,
+smaller studies being conducted differently, or chance. "Asymmetric funnel"
+does not mean "suppressed studies".
+""", reading="7 min", panes=["stats"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("choosing", "Choosing a test", "Choosing and running a test",
+  "A decision path from what you have to what to run.",
+  """
+Start from the **outcome**, then the **predictor**, then the **design**.
+
+## Continuous outcome
+
+| Groups | Design | Parametric | Rank-based |
+|---|---|---|---|
+| 2 | Independent | Welch t-test | Mann-Whitney U |
+| 2 | Paired | Paired t-test | Wilcoxon signed-rank |
+| 3+ | Independent | One-way ANOVA | Kruskal-Wallis |
+| 3+ | Repeated | Repeated-measures ANOVA | Friedman |
+| 2+ factors | Factorial | Factorial ANOVA | Aligned rank transform |
+| With covariates | Any | ANCOVA | Quantile regression |
+| Clustered or repeated | Any | Mixed-effects model | GEE |
+
+Use **Welch by default** for two independent groups. It costs almost nothing
+when variances are equal and is correct when they are not.
+
+## Binary outcome
+
+| Question | Test |
+|---|---|
+| Association with another category | Chi-square, or Fisher when cells are sparse |
+| Paired before and after | McNemar |
+| Ordered exposure, is there a trend | Cochran-Armitage |
+| Effect of several predictors | Logistic regression |
+| Risk in two groups | Risk ratio, odds ratio, risk difference, NNT |
+
+## Time to event
+
+Kaplan-Meier with log-rank for unadjusted comparison. Cox for adjusted. If
+hazards are not proportional, use restricted mean survival time, which is
+interpretable in months and does not need the assumption. If competing events
+are common, Kaplan-Meier overestimates risk; use cumulative incidence and
+Fine-Gray.
+
+## Relationship between two continuous variables
+
+Correlation if you want the strength of association. Regression if you want to
+predict, or to adjust for something. They answer different questions and it is
+worth being clear which you are asking.
+
+For **agreement** between two methods measuring the same thing, correlation is
+the wrong tool entirely. Use Bland-Altman and ICC. Two methods that differ by a
+constant 10 units correlate at r = 1.0.
+
+## Diagnostic test performance
+
+ROC and AUC for discrimination. Calibration for whether the probabilities are
+right. Decision curve analysis for whether it is clinically useful. A model can
+have excellent AUC and be useless at every threshold anyone would act on.
+
+## Parametric or rank-based
+
+The old rule was to test for normality and switch. That is not quite right.
+
+- With **n above roughly 30 per group**, the central limit theorem covers the
+  mean, and t-tests are fine on non-normal data
+- With **small n and visible skew**, use the rank-based test
+- With **outliers you cannot justify removing**, rank-based is more robust
+- If you want a **confidence interval on a difference in means**, the
+  parametric test or a bootstrap gives you one; the rank test does not
+
+A rank test is not a free lunch. Mann-Whitney tests whether one group tends to
+exceed the other, which is a test of medians **only if the two distributions
+have the same shape**.
+
+## Still unsure
+
+Run **Descriptives** and draw a **raincloud** plot first. Looking at the data
+answers this question faster than any flowchart.
+""", reading="6 min", panes=["stats"]),
 
 ]
