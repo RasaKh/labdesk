@@ -2,9 +2,9 @@
 
 Reference material that travels with the tool, so the thing that tells you
 how to run a review sits next to the thing that runs it. Two halves: doing a
-review, and statistics. Entries are plain data: headings, bold, code, bullets,
-callouts, pane links and tables. Statistics entries cover choosing a test,
-assumptions, multiplicity and power."""
+review, and statistics. Entries are plain data the client renders: headings,
+bold, code, bullets, callouts, pane links and tables. This stage adds reading
+what comes back and producing the output."""
 
 SECTIONS = [
     ("Start here", "haem"),
@@ -813,5 +813,294 @@ that is 1.95: you need nearly twice the participants.
 
 The cluster adjustment tool computes this from your data.
 """, reading="4 min", panes=["stats"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("effects", "Effect sizes and intervals", "Reading what comes back",
+  "The p value is the least interesting number on the screen.",
+  """
+A p value answers one question: how surprising is this data if nothing is going
+on. It says nothing about how large the effect is, and with a large enough
+sample any trivial difference becomes significant.
+
+Every result here reports effect sizes alongside, and they are what you should
+lead with.
+
+## Standardised differences
+
+| Measure | Reading |
+|---|---|
+| **Cohen's d** | Difference in standard deviations. 0.2 small, 0.5 medium, 0.8 large, and these benchmarks are arbitrary conventions, not laws |
+| **Hedges' g** | d with a small-sample correction. Prefer it below n = 20 per group; identical above |
+| **Cohen's dz** | The paired version. Not comparable to d across designs, and confusing the two is a common error |
+| **Glass's delta** | Uses only the control group's SD. For when the intervention changes the variance |
+
+## Variance explained
+
+| Measure | Reading |
+|---|---|
+| **η²** | Proportion of total variance explained by the factor |
+| **partial η²** | Proportion of variance explained after removing other factors. Larger, and not comparable across designs |
+| **ω²** | Less biased than η². Prefer it |
+| **R²** | For regression. Adjusted R² penalises extra predictors |
+
+## Rank-based
+
+| Measure | Reading |
+|---|---|
+| **Rank-biserial r** | -1 to 1, the rank equivalent of a correlation |
+| **Common language effect size** | The probability a random member of group A exceeds a random member of group B. The most intuitive number in this whole list |
+| **Hodges-Lehmann** | The median of all pairwise differences. A location estimate in the original units |
+
+## Clinical measures
+
+| Measure | Reading |
+|---|---|
+| **Risk ratio** | How many times more likely. Intuitive, needs the baseline risk to be meaningful |
+| **Odds ratio** | Ratio of odds. Approximates the risk ratio only when the outcome is rare, and is routinely over-interpreted when it is not |
+| **Risk difference** | Absolute difference. Often the number that should drive a decision |
+| **NNT** | How many treated for one to benefit. Depends entirely on baseline risk, so an NNT from one population does not transfer to another |
+
+## The interval matters more than the point
+
+Report the confidence interval always. It carries everything the p value does,
+plus the magnitude, plus the precision.
+
+- An interval excluding the null is a significant result
+- A **narrow** interval around a small effect means "there is really nothing
+  much here"
+- A **wide** interval spanning the null means "this study could not tell", which
+  is a very different statement and is usually reported wrongly as "no effect"
+
+> "No significant difference" and "no difference" are not the same claim. If
+> you want to claim equivalence, run an equivalence test with a pre-specified
+> margin. It is in the Bayesian and equivalence group.
+""", reading="5 min", panes=["stats"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("misreading", "Common ways to misread a result", "Reading what comes back",
+  "The failure modes worth checking yourself against.",
+  """
+## p = 0.06 does not mean no effect
+
+It means the evidence did not clear a conventional and arbitrary threshold.
+Report the estimate and its interval. "Trending towards significance" is not a
+thing; either report it as inconclusive or report the magnitude.
+
+## A significant p does not mean a large effect
+
+With n = 10,000, a correlation of 0.03 is significant and explains 0.09% of the
+variance. Check the effect size before writing the sentence.
+
+## Mann-Whitney is not a test of medians
+
+It tests whether values in one group tend to exceed the other. It equals a test
+of medians only when the two distributions have the same shape. Two groups with
+identical medians and different shapes will come out significant.
+
+## Correlation is not agreement
+
+Two methods that read consistently 10 units apart correlate perfectly. For
+agreement use Bland-Altman and ICC, and state which of the six ICC forms.
+
+## AUC is not usefulness
+
+A model can discriminate well and be badly calibrated, or well calibrated and
+useless at every threshold anyone would act on. Check calibration and run a
+decision curve.
+
+## Predictive values depend on prevalence
+
+Sensitivity and specificity are properties of the test. PPV and NPV are
+properties of the test **in a population**. A test with 95% sensitivity and 95%
+specificity has a PPV of 16% when prevalence is 1%. The ROC tool makes the
+prevalence used explicit for exactly this reason.
+
+## Subgroup findings are not findings
+
+An unplanned subgroup difference is a hypothesis, not a result. Subgroup
+analyses in meta-analysis are observational even when every included study was
+randomised, because studies were not randomly assigned to subgroups.
+
+## Kaplan-Meier overestimates risk under competing events
+
+If patients can die of something else, they are not simply censored, and
+treating them as censored inflates the cumulative incidence. Use competing
+risks.
+
+## A truncated y axis exaggerates everything
+
+The survival plot defaults to a y axis from zero for this reason. If you turn
+it off because events are rare, say so in the caption.
+
+## Baseline p values in a randomised trial mean nothing
+
+Any imbalance is by definition chance, so testing it tests a hypothesis you
+know is true. Report standardised mean differences instead, which is why the
+Table 1 generator offers them.
+""", reading="4 min", panes=["stats"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("figures", "Figures for publication", "Producing the output",
+  "Sizing, honesty, and the significance bracket.",
+  """
+Figures here are built from a **result**, not from raw data, so the annotation
+cannot disagree with the statistics that produced it.
+
+## Size for the journal, not the screen
+
+Most journals take 89 mm single column and 183 mm double. Both are presets. Set
+this before you draw rather than scaling afterwards, because scaling a raster
+figure ruins the type and scaling type separately from the plot ruins the
+proportions.
+
+- **Vector** PDF, SVG or EPS for anything with lines and text
+- **Raster** TIFF at 300 dpi minimum, 600 for figures with fine detail
+- Fonts are embedded
+
+## Error bars must be labelled
+
+SD, SEM and 95% CI look similar and mean different things. SEM bars are always
+the shortest, which is why they are the most popular and the least informative.
+Every figure prints which one it used in the corner. Keep that.
+
+## Show the data
+
+Overlay individual points on bar and box plots. It is the single cheapest way
+to make a figure honest: it shows n, spread, outliers and any bimodality that a
+mean and an error bar conceal entirely.
+
+If points would be too dense, use a raincloud, which shows the distribution,
+the summary and the raw values together.
+
+## Significance brackets
+
+Brackets are sorted by span and assigned the lowest free level that does not
+overlap. Adjacent comparisons share a level, a bracket spanning another is
+lifted above it. Nothing collides regardless of how many comparisons there are.
+
+- **Asterisks** or **exact p values**, or both
+- **Only annotate significant** is on by default. Turning it off shows the
+  non-significant comparisons too, which is more honest and much busier
+
+## Colour
+
+Okabe-Ito is the default palette and is safe for all common forms of colour
+blindness. Viridis for continuous scales. Check the greyscale version if the
+journal prints in black and white.
+
+Never encode a variable by colour alone. Add a shape, a pattern or a label.
+
+## Figure types worth knowing about
+
+- **Raincloud** distribution, summary and raw data in one panel
+- **Bland-Altman** agreement, with limits and their intervals
+- **Forest** individual estimates, weight-proportional markers, pooled diamond
+  and the prediction interval
+- **Funnel** small-study effects, with significance contours
+- **Kaplan-Meier** with the number-at-risk table, which reviewers will ask for
+- **Decision curve** net benefit across thresholds
+- **PRISMA and CONSORT** flow diagrams drawn from the database
+""", reading="4 min", panes=["figures"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("reproducibility", "Reproducibility and the ledger", "Producing the output",
+  "What gets recorded, and what you can hand to someone else.",
+  """
+## What every run records
+
+- A **sha256 of the data** as analysed, after cleaning
+- The **full specification**: test, variables, every parameter
+- The **random seed**, so resampling reproduces exactly
+- The **package versions** of Python, SciPy, statsmodels and the rest
+- Every **assumption check** and what it said
+- The **result**, and the wall-clock duration
+
+Blocked runs are recorded too. You cannot quietly try eight tests and report
+the ninth.
+
+## The methods paragraph
+
+Generated from the ledger, so it names the tests that were actually executed,
+the corrections applied, the number of assumption checks and the number that
+failed, and the software versions.
+
+It is a **draft**. Read it before pasting it. It cannot know why you chose a
+test, and that reasoning is what a methods section is for.
+
+## The bundle
+
+The Report pane builds a zip containing:
+
+```
+manifest.json     data hash, seed, alpha, package versions
+methods.txt       the generated paragraph
+runs/             every spec, result and assumption check as JSON
+figures/          every rendered figure
+reproduce.py      a standalone Python script
+reproduce.R       the R equivalent
+data.csv          the data as analysed
+```
+
+Someone with the zip and neither this tool nor your machine can re-run the
+analysis. That is the bar.
+
+## Pre-registration
+
+The Report pane produces an OSF-style skeleton. The field people leave blank is
+**what happens if an assumption fails**, and it is the one that matters most,
+because deciding that after seeing the data is exactly how a p-hack ends up
+looking principled.
+
+## The reporting checklists
+
+CONSORT, STROBE, PRISMA, STARD, TRIPOD, ARRIVE and SPIRIT, tickable in the
+Report pane. Most journals require the relevant one at submission. Working
+through it before writing is faster than retrofitting it afterwards, and it
+routinely surfaces something that should have been decided months earlier.
+""", reading="3 min", panes=["report", "runs"]),
+
+# ═══════════════════════════════════════════════════════════════════════
+E("gotchas", "Things that will bite you", "Producing the output",
+  "Practical failures, in the order they usually happen.",
+  """
+**A binary column typed as continuous.** Check the dictionary first. Everything
+downstream depends on it and nothing will warn you.
+
+**Excel dates.** A column of dates imported as numbers, or worse, gene names
+converted to dates. Check the preview.
+
+**Missing codes as data.** 999 and -999 are recognised on import; unusual
+sentinels are not. A mean age of 340 is the symptom.
+
+**Repeated measures analysed as independent.** The most common serious error in
+the literature. If a subject appears in more than one row, you need a mixed
+model. The independence lozenge is amber on every relevant test for this
+reason.
+
+**Excluding outliers after seeing the result.** Decide the rule first, apply it
+blind, record it. The outlier screen logs every exclusion so it reaches the
+methods text.
+
+**Optional stopping.** Checking significance as data accumulates, and stopping
+when it appears, inflates the false positive rate substantially. If you need
+interim looks, use alpha spending.
+
+**Baseline testing in a randomised trial.** Report standardised mean
+differences, not p values.
+
+**Pooling incomparable studies.** A precise estimate of a meaningless average.
+
+**Citing a retracted study.** Run the retraction check before you submit, and
+again if review takes months.
+
+**Reporting a subgroup finding as a result.** Label it exploratory.
+
+**Reporting "no difference" from a non-significant test.** Run an equivalence
+test or report the interval.
+
+**Losing the search date.** PRISMA needs it. The harvest log records it.
+
+**Screening alone and not saying so.** Declare it as a limitation.
+""", reading="3 min", panes=[]),
 
 ]
