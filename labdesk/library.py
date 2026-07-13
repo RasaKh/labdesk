@@ -1,10 +1,22 @@
-"""The handbook.
+"""
+The handbook.
 
 Reference material that travels with the tool, so the thing that tells you
-how to run a review sits next to the thing that runs it. Two halves: doing a
-review, and statistics. Entries are plain data the client renders: headings,
-bold, code, bullets, callouts, pane links and tables. This stage adds reading
-what comes back and producing the output."""
+how to run a review sits next to the thing that runs it. Two halves:
+
+  Doing a review   the whole arc, protocol to manuscript, with the pane that
+                   handles each step named at each point
+  Statistics       choosing a test, reading what comes back, and the traps
+
+Entries are plain data. `body` is a small markdown subset the client renders:
+  ## heading      **bold**      `code`      - bullet      1. numbered
+  > callout       [Pane name](#pane:stats)     | tables |
+
+Nothing here is generated. It is written down because a tool that runs a
+Mann-Whitney without telling you it is not a test of medians is not much
+help, and because the review workflow has an order that matters and no
+interface can make that obvious on its own.
+"""
 
 SECTIONS = [
     ("Start here", "haem"),
@@ -1102,5 +1114,35 @@ test or report the interval.
 
 **Screening alone and not saying so.** Declare it as a limitation.
 """, reading="3 min", panes=[]),
-
 ]
+
+
+INDEX = {e["id"]: e for e in ENTRIES}
+
+
+def grouped():
+    out = []
+    for name, stain in SECTIONS:
+        items = [{"id": e["id"], "title": e["title"], "summary": e["summary"],
+                  "reading": e["reading"]} for e in ENTRIES if e["section"] == name]
+        if items:
+            out.append({"section": name, "stain": stain, "items": items})
+    return out
+
+
+def get(entry_id):
+    return INDEX.get(entry_id)
+
+
+def search(q):
+    q = (q or "").lower().strip()
+    if not q:
+        return []
+    hits = []
+    for e in ENTRIES:
+        hay = (e["title"] + " " + e["summary"] + " " + e["body"]).lower()
+        if q in hay:
+            i = hay.find(q)
+            hits.append({"id": e["id"], "title": e["title"], "section": e["section"],
+                         "excerpt": e["body"][max(0, i - 70):i + 130].strip()})
+    return hits
