@@ -44,3 +44,41 @@ def create_study(project_id: str, label: str, report_ids: list[str],
             db.exec_("INSERT INTO study_report(project_id,study_id,report_id,relationship,created_at) "
                      "VALUES(?,?,?,?,?)", (project_id, sid, report_id, relationship, now))
     return study_detail(project_id, sid)
+
+
+def study_detail(project_id: str, study_id: str) -> dict:
+    row = db.one("SELECT * FROM study WHERE id=? AND project_id=?", (study_id, project_id))
+    if not row:
+        raise KeyError("Study not found in this project.")
+    row["reports"] = db.query(
+        "SELECT er.*,sr.relationship,r.title,r.doi,r.year FROM study_report sr "
+        "JOIN evidence_report er ON er.id=sr.report_id "
+        "JOIN record r ON r.id=er.record_id WHERE sr.project_id=? AND sr.study_id=?",
+        (project_id, study_id),
+    )
+    return row
+
+
+def studies(project_id: str) -> list[dict]:
+    return [study_detail(project_id, row["id"]) for row in db.query(
+        "SELECT id FROM study WHERE project_id=? ORDER BY created_at DESC", (project_id,)
+    )]
+
+
+def search_executions(project_id: str) -> list[dict]:
+    rows = db.query("SELECT * FROM search_execution WHERE project_id=? "
+                    "ORDER BY started_at DESC LIMIT 200", (project_id,))
+    for row in rows:
+        row["query_spec"] = db.json_value(row["query_spec"], {})
+    return rows
+
+
+def retrieval_hits(project_id: str, search_id: str) -> list[dict]:
+    if not db.one("SELECT id FROM search_execution WHERE id=? AND project_id=?",
+                  (search_id, project_id)):
+        raise KeyError("Search execution not found in this project.")
+    rows = db.query("SELECT * FROM retrieval_hit WHERE project_id=? AND search_execution_id=? "
+                    "ORDER BY created_at", (project_id, search_id))
+    for row in rows:
+        row["metadata"] = db.json_value(row["metadata"], {})
+    return rows
