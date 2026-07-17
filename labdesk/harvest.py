@@ -2,8 +2,8 @@
 
 SOURCE_REGISTRY is the same declarative pattern as the test registry: each
 source declares its query fields, its rate limit, and whether it needs a key.
-The query builder in the UI is generated from these declarations, beginning
-with the main literature sources."""
+The full source table is now declared across literature, trial registries,
+drug and safety, molecular, and population groups."""
 
 
 from .schema import P, group_registry, index
@@ -93,6 +93,63 @@ SOURCES = [
               P("days", "Last N days", "int", default=30, min=1, max=3650),
               P("query", "Filter titles containing", "text"),
               P("limit", "Maximum records", "int", default=200)]),
+
+    S("unpaywall", "Unpaywall", "Literature", "https://api.unpaywall.org/v2",
+      status=READY, needs_key=True,
+      blurb="Resolves a DOI to a legal open-access full text. Needs only an email "
+            "address, set in Settings.",
+      params=[P("dois", "DOIs", "textarea", placeholder="One per line"),
+              P("from_corpus", "Resolve every DOI in the corpus", "bool", default=True)]),
+
+    S("retraction", "Retraction check", "Literature", "https://api.crossref.org",
+      status=READY,
+      blurb="Checks every DOI in the corpus against Crossref update notices: "
+            "retractions, expressions of concern and corrections.",
+      params=[P("scope", "Scope", "select", default="corpus",
+                choices=[("corpus", "Whole corpus"), ("included", "Included studies only")])]),
+
+    S("ctgov", "ClinicalTrials.gov", "Trial registries",
+      "https://clinicaltrials.gov/api/v2", status=READY,
+      blurb="API v2. Conditions, interventions, phase, status, enrolment, outcomes "
+            "and results where posted.",
+      params=[
+          P("condition", "Condition", "text", placeholder="spinal cord injury"),
+          P("intervention", "Intervention", "text"),
+          P("term", "Other terms", "text"),
+          P("status", "Status", "multiselect",
+            choices=[("RECRUITING", "Recruiting"), ("COMPLETED", "Completed"),
+                     ("ACTIVE_NOT_RECRUITING", "Active, not recruiting"),
+                     ("TERMINATED", "Terminated"), ("WITHDRAWN", "Withdrawn"),
+                     ("NOT_YET_RECRUITING", "Not yet recruiting"),
+                     ("UNKNOWN", "Unknown")]),
+          P("phase", "Phase", "multiselect",
+            choices=[("PHASE1", "1"), ("PHASE2", "2"), ("PHASE3", "3"), ("PHASE4", "4"),
+                     ("EARLY_PHASE1", "Early 1"), ("NA", "Not applicable")]),
+          P("study_type", "Study type", "select", default="",
+            choices=[("", "Any"), ("INTERVENTIONAL", "Interventional"),
+                     ("OBSERVATIONAL", "Observational")]),
+          P("country", "Country", "text"),
+          P("has_results", "With posted results only", "bool", default=False),
+          P("limit", "Maximum records", "int", default=200, min=1, max=5000),
+      ],
+      docs="https://clinicaltrials.gov/data-api/api"),
+
+    S("ictrp", "WHO ICTRP", "Trial registries", "https://trialsearch.who.int",
+      blurb="Aggregates national registries not covered by ClinicalTrials.gov. "
+            "Needed for a complete search in a systematic review.",
+      params=[P("query", "Query", "text"), P("limit", "Maximum records", "int", default=200)]),
+
+    S("ctis", "EU CTIS", "Trial registries", "https://euclinicaltrials.eu",
+      blurb="The EU register that replaced EudraCT.",
+      params=[P("query", "Query", "text"), P("limit", "Maximum records", "int", default=200)]),
+
+    S("isrctn", "ISRCTN", "Trial registries", "https://www.isrctn.com/api",
+      params=[P("query", "Query", "text"), P("limit", "Maximum records", "int", default=200)]),
+
+    S("prospero", "PROSPERO", "Trial registries", "https://www.crd.york.ac.uk/prospero",
+      blurb="Check whether your review question is already registered before "
+            "committing months to it.",
+      params=[P("query", "Query", "text")]),
 
 ]
 
