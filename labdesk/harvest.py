@@ -2,10 +2,14 @@
 
 SOURCE_REGISTRY is the same declarative pattern as the test registry: each
 source declares its query fields, its rate limit, and whether it needs a key.
-The full source table is now declared across literature, trial registries,
-drug and safety, molecular, and population groups."""
+HTTP fetches go through a thin client with a small on-disk cache so repeated
+identical queries do not re-hit NCBI."""
 
+import json
+import os
+import time
 
+from .config import CACHE_DIR, get
 from .schema import P, group_registry, index
 
 READY, STUB = "ready", "stub"
@@ -151,8 +155,73 @@ SOURCES = [
             "committing months to it.",
       params=[P("query", "Query", "text")]),
 
+    S("openfda", "openFDA", "Drugs and safety", "https://api.fda.gov", status=READY,
+      blurb="Adverse event reports, drug labels, recalls and device events.",
+      params=[P("endpoint", "Endpoint", "select", default="drug/event",
+                choices=[("drug/event", "Adverse events (FAERS)"),
+                         ("drug/label", "Drug labels"),
+                         ("drug/enforcement", "Recalls"),
+                         ("device/event", "Device adverse events")]),
+              P("search", "Search expression", "text",
+                placeholder='patient.drug.medicinalproduct:"metformin"'),
+              P("count", "Count field", "text", adv=True,
+                placeholder="patient.reaction.reactionmeddrapt.exact"),
+              P("limit", "Maximum records", "int", default=100, min=1, max=1000)]),
+
+    S("chembl", "ChEMBL", "Drugs and safety", "https://www.ebi.ac.uk/chembl/api/data",
+      params=[P("query", "Molecule or target", "text"),
+              P("limit", "Maximum records", "int", default=100)]),
+
+    S("rxnorm", "RxNorm", "Drugs and safety", "https://rxnav.nlm.nih.gov/REST",
+      blurb="Drug name normalisation and interaction lookups.",
+      params=[P("query", "Drug name", "text")]),
+
 ]
 
 
 REGISTRY = index(SOURCES)
 GROUPS = group_registry(SOURCES)
+
+#  HTTP with a small on-disk cache. Repeated identical queries during a
+#  screening session should not re-hit NCBI.
+# ─────────────────────────────────────────────────────────────────────────
+
+_last_call = {}
+
+
+def _throttle(source_id, rate):
+    now = time.time()
+    gap = 1.0 / max(0.1, rate)
+    wait = gap - (now - _last_call.get(source_id, 0))
+    if wait > 0:
+        time.sleep(wait)
+    _last_call[source_id] = time.time()
+
+
+def _cache_path(url):
+    import hashlib
+    return os.path.join(CACHE_DIR, hashlib.sha256(url.encode()).hexdigest()[:32] + ".json")
+
+
+def fetch(url, source_id="generic", rate=3, as_json=True, headers=None, cache=True):
+    import requests
+    cp = _cache_path(url)
+    ttl = float(get("harvest_cache_hours", 24)) * 3600
+    if cache and os.path.exists(cp) and time.time() - os.path.getmtime(cp) < ttl:
+        with open(cp, "r", encoding="utf-8") as fh:
+            return json.load(fh) if as_json else fh.read()
+    _throttle(source_id, rate)
+    h = {"User-Agent": f"LabDesk/0.1 (mailto:{get('ncbi_email') or 'unknown'})"}
+    h.update(headers or {})
+    r = requests.get(url, headers=h, timeout=60)
+    r.raise_for_status()
+    out = r.json() if as_json else r.text
+    if cache:
+        with open(cp, "w", encoding="utf-8") as fh:
+            json.dump(out, fh) if as_json else fh.write(out)
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Clients
+# ─────────────────────────────────────────────────────────────────────────
