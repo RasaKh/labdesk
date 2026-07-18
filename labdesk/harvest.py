@@ -1,9 +1,21 @@
-"""Literature, trial registry and biological database harvesting.
+"""
+Literature, trial registry and biological database harvesting.
 
 SOURCE_REGISTRY is the same declarative pattern as the test registry: each
 source declares its query fields, its rate limit, and whether it needs a key.
-Each declared source now has a client that turns its parameters into recorded
-records, and a registry of those clients."""
+The query builder in the UI is generated from these declarations, so adding
+PubMed Central or a new registry is a dict, not a form.
+
+Two things here that most reference managers do not do, and that matter for
+a review that has to survive peer review:
+
+  Retraction flagging. Crossref carries the Retraction Watch data. Every
+  harvested DOI is checked, and a retracted paper is marked in the corpus
+  rather than quietly cited.
+
+  Open access resolution. Unpaywall turns a DOI into a legal full-text link,
+  so full-text screening does not become a scavenger hunt.
+"""
 
 import json
 import os
@@ -35,7 +47,7 @@ COMMON_Q = [
 ]
 
 SOURCES = [
-
+    # ── Literature ───────────────────────────────────────────────────────
     S("pubmed", "PubMed", "Literature", "https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
       status=READY, rate=10,
       blurb="E-utilities esearch then efetch. An API key raises the rate limit from "
@@ -115,6 +127,7 @@ SOURCES = [
       params=[P("scope", "Scope", "select", default="corpus",
                 choices=[("corpus", "Whole corpus"), ("included", "Included studies only")])]),
 
+    # ── Trial registries ─────────────────────────────────────────────────
     S("ctgov", "ClinicalTrials.gov", "Trial registries",
       "https://clinicaltrials.gov/api/v2", status=READY,
       blurb="API v2. Conditions, interventions, phase, status, enrolment, outcomes "
@@ -158,6 +171,7 @@ SOURCES = [
             "committing months to it.",
       params=[P("query", "Query", "text")]),
 
+    # ── Drugs and safety ─────────────────────────────────────────────────
     S("openfda", "openFDA", "Drugs and safety", "https://api.fda.gov", status=READY,
       blurb="Adverse event reports, drug labels, recalls and device events.",
       params=[P("endpoint", "Endpoint", "select", default="drug/event",
@@ -179,6 +193,7 @@ SOURCES = [
       blurb="Drug name normalisation and interaction lookups.",
       params=[P("query", "Drug name", "text")]),
 
+    # ── Molecular ────────────────────────────────────────────────────────
     S("geo", "GEO", "Molecular", "https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
       blurb="Expression series metadata, for finding reusable datasets.",
       params=[P("query", "Query", "text"), P("limit", "Maximum records", "int", default=100)]),
@@ -209,6 +224,7 @@ SOURCES = [
       params=[P("genes", "Genes", "textarea"), P("species", "Species", "text",
                                                  default="Homo sapiens")]),
 
+    # ── Population ───────────────────────────────────────────────────────
     S("who_gho", "WHO Global Health Observatory", "Population",
       "https://ghoapi.azureedge.net/api",
       params=[P("indicator", "Indicator code", "text"),
@@ -218,13 +234,14 @@ SOURCES = [
       "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data",
       params=[P("dataset", "Dataset code", "text"),
               P("filters", "Filters", "text", adv=True)]),
-
 ]
 
 
 REGISTRY = index(SOURCES)
 GROUPS = group_registry(SOURCES)
 
+
+# ─────────────────────────────────────────────────────────────────────────
 #  HTTP with a small on-disk cache. Repeated identical queries during a
 #  screening session should not re-hit NCBI.
 # ─────────────────────────────────────────────────────────────────────────
@@ -677,3 +694,81 @@ CLIENTS = {
     "openfda": openfda, "uniprot": uniprot,
     "unpaywall": unpaywall, "retraction": retraction,
 }
+
+
+def harvest(source_id, params, project_id=None, ctl=None):
+    entry = REGISTRY.get(source_id)
+    if not entry:
+        raise ValueError(f"Unknown source {source_id!r}.")
+    fn = CLIENTS.get(source_id)
+    if fn is None:
+        raise NotImplementedError(
+            f"{entry['label']} is declared but its client is not written yet.\n"
+            f"Add to labdesk/harvest.py: def {source_id}(params, ctl) -> "
+            "{'records': [...]}\n"
+            f"Base URL: {entry['base']}"
+            + (f"\nDocs: {entry['docs']}" if entry.get("docs") else ""))
+    if project_id is None:
+        raise ValueError("Harvesting requires an explicit project.")
+    search_id = db.new_id("search_")
+    started = time.time()
+    db.insert("search_execution", {
+        "id": search_id, "project_id": project_id, "source": source_id,
+        "query_spec": json.dumps(params or {}, sort_keys=True), "status": "running",
+        "started_at": started,
+    })
+    client_params = dict(params or {})
+    client_params["_project_id"] = project_id
+    try:
+        res = fn(client_params, ctl)
+    except Exception as exc:
+        db.exec_("UPDATE search_execution SET status='failed',error=?,ended_at=? WHERE id=?",
+                 (f"{type(exc).__name__}: {exc}", time.time(), search_id))
+        raise
+    stored = 0
+    for rec in res.get("records", []):
+        original = dict(rec)
+        rec["project_id"] = project_id
+        rec["id"] = db.new_id("rec_")
+        existing = None
+        if rec.get("doi"):
+            existing = db.one("SELECT id FROM record WHERE doi=? AND project_id IS ?",
+                              (rec["doi"], project_id))
+        if not existing:
+            existing = db.one(
+                "SELECT id FROM record WHERE source=? AND source_uid=? AND project_id IS ?",
+                (rec["source"], rec["source_uid"], project_id))
+        if existing:
+            db.insert("retrieval_hit", {
+                "id": db.new_id("hit_"), "project_id": project_id,
+                "search_execution_id": search_id, "source": source_id,
+                "source_uid": rec.get("source_uid"), "record_id": existing["id"],
+                "metadata": original, "created_at": time.time(),
+            })
+            continue
+        db.insert("record", rec)
+        db.insert("retrieval_hit", {
+            "id": db.new_id("hit_"), "project_id": project_id,
+            "search_execution_id": search_id, "source": source_id,
+            "source_uid": rec.get("source_uid"), "record_id": rec["id"],
+            "metadata": original, "created_at": time.time(),
+        })
+        db.insert("evidence_report", {
+            "id": db.new_id("report_"), "project_id": project_id,
+            "record_id": rec["id"], "report_kind": "publication",
+            "created_at": time.time(),
+        })
+        stored += 1
+    db.insert("harvest_query", {"id": db.new_id(), "project_id": project_id,
+                                "source": source_id, "query": json.dumps(params),
+                                "n_returned": len(res.get("records", [])),
+                                "ran_at": time.time()})
+    res["stored"] = stored
+    res["duplicates_skipped"] = len(res.get("records", [])) - stored
+    db.exec_("UPDATE search_execution SET status='completed',n_returned=?,n_imported=?,"
+             "n_duplicates=?,ended_at=? WHERE id=?",
+             (len(res.get("records", [])), stored, res["duplicates_skipped"],
+              time.time(), search_id))
+    res["search_execution_id"] = search_id
+    res.pop("records", None)
+    return res
