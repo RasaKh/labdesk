@@ -1,4 +1,4 @@
-"""Project audit bundles with complete manifests."""
+"""Project audit bundles with complete manifests and isolated staging."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from . import db
+from . import db, revisions
 from .config import EXPORT_DIR
 
 
@@ -50,12 +50,26 @@ def create_audit_bundle(project_id: str, include_data=False) -> dict:
         }
         for name, payload in payloads.items():
             (stage / name).write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        if include_data:
+            data_dir = stage / "data"
+            data_dir.mkdir()
+            for version in versions:
+                artifact = db.one("SELECT * FROM artifact WHERE id=? AND project_id=?",
+                                  (version["artifact_id"], project_id))
+                if not artifact or not os.path.isfile(artifact["path"]):
+                    omissions.append({"dataset_version_id": version["id"], "reason": "missing"})
+                    continue
+                if _hash(artifact["path"]) != artifact["sha256"]:
+                    omissions.append({"dataset_version_id": version["id"], "reason": "hash_mismatch"})
+                    continue
+                shutil.copy2(artifact["path"], data_dir / (version["id"] + Path(artifact["path"]).suffix))
         files = []
         for path in sorted(stage.rglob("*")):
             if path.is_file():
                 files.append({"path": path.relative_to(stage).as_posix(),
                               "sha256": _hash(path), "size_bytes": path.stat().st_size})
-        # A record-only audit so far: inspection data without a verified replay.
+        # This is an audit export. Data inclusion improves inspection but does
+        # not turn it into a verified replay package.
         reproducibility = "record_only"
         manifest = {"schema_version": 1, "export_id": export_id,
                     "created_at": time.time(), "project_id": project_id,
