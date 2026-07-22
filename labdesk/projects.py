@@ -1,6 +1,8 @@
-"""Projects: the full stage pipeline with all derived checks."""
+"""Projects: CRUD, progression and the project ledger."""
 
 import json
+import os
+import time
 
 from . import db
 
@@ -193,3 +195,187 @@ PIPELINES = {
                  "extract", "appraise", "import", "dictionary", "analyse", "figures",
                  "synthesise", "report"],
 }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  CRUD
+# ─────────────────────────────────────────────────────────────────────────
+
+def create(name, kind="review", question="", registered="", notes=""):
+    pid = db.new_id("prj_")
+    now = time.time()
+    db.insert("project", {
+        "id": pid, "name": name.strip() or "Untitled project", "kind": kind,
+        "question": question, "registered": registered, "notes": notes,
+        "status": "active", "stage_notes": "{}",
+        "created_at": now, "updated_at": now,
+    })
+    log(pid, "created", detail=f"Created as a {KINDS.get(kind, {}).get('label', kind)}.")
+    return get(pid)
+
+
+def get(pid):
+    if not pid:
+        return None
+    p = db.one("SELECT * FROM project WHERE id=?", (pid,))
+    if p:
+        try:
+            p["stage_notes"] = json.loads(p.get("stage_notes") or "{}")
+        except Exception:
+            p["stage_notes"] = {}
+    return p
+
+
+def update(pid, patch, expected_revision=None):
+    current = get(pid)
+    if not current:
+        return None
+    revision = int(current.get("revision") or 1)
+    if expected_revision is not None and int(expected_revision) != revision:
+        raise RuntimeError("Project changed since it was loaded.")
+    allowed = ("name", "kind", "question", "registered", "notes", "status")
+    sets, args = [], []
+    for k in allowed:
+        if k in patch:
+            sets.append(f"{k}=?")
+            args.append(patch[k])
+    if sets:
+        sets.append("updated_at=?")
+        args.append(time.time())
+        sets.append("revision=?")
+        args.append(revision + 1)
+        args.append(pid)
+        db.exec_(f"UPDATE project SET {','.join(sets)} WHERE id=?", tuple(args))
+    return get(pid)
+
+
+def listing(include_archived=False):
+    sql = "SELECT * FROM project"
+    if not include_archived:
+        sql += " WHERE status IS NULL OR status != 'archived'"
+    sql += " ORDER BY updated_at DESC"
+    out = []
+    for p in db.query(sql):
+        pid = p["id"]
+        prog = progress(pid)
+        p["counts"] = counts(pid)
+        p["progress"] = {"done": prog["n_done"], "total": prog["n_total"],
+                         "percent": prog["percent"], "current": prog["current"]}
+        out.append(p)
+    return out
+
+
+def counts(pid):
+    from . import screening
+    ft = screening._final_screen_states(pid, "full_text")
+    included = sum(1 for x in ft.values() if x.get("final") and x.get("decision") == "include")
+    return {
+        "records": _c("SELECT COUNT(*) c FROM record WHERE project_id IS ?", (pid,)),
+        "datasets": _c("SELECT COUNT(*) c FROM dataset WHERE project_id IS ?", (pid,)),
+        "runs": _c("SELECT COUNT(*) c FROM analysis_run WHERE project_id IS ? "
+                   "AND status='ok'", (pid,)),
+        "figures": _c("SELECT COUNT(*) c FROM figure WHERE project_id IS ?", (pid,)),
+        "included": included,
+    }
+
+
+def delete(pid, purge=True):
+    """Removing a project removes its records by cascade. Datasets, runs and
+    figures are referenced loosely rather than by foreign key, so they are
+    handled here explicitly: purge deletes them, otherwise they are released
+    back to the unfiled bucket rather than silently vanishing."""
+    n = counts(pid)
+    if purge:
+        figs = db.query("SELECT path FROM figure WHERE project_id IS ?", (pid,))
+        dsets = db.query("SELECT id,path FROM dataset WHERE project_id IS ?", (pid,))
+        with db.transaction():
+            db.exec_("DELETE FROM figure WHERE project_id IS ?", (pid,))
+            db.exec_("DELETE FROM analysis_run WHERE project_id IS ?", (pid,))
+            db.exec_("DELETE FROM dataset WHERE project_id IS ?", (pid,))
+            db.exec_("DELETE FROM project WHERE id=?", (pid,))
+        for row in figs + dsets:
+            path = row.get("path")
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    else:
+        with db.transaction():
+            for t in ("figure", "analysis_run", "dataset"):
+                db.exec_(f"UPDATE {t} SET project_id=NULL WHERE project_id IS ?", (pid,))
+            db.exec_("DELETE FROM project WHERE id=?", (pid,))
+    return {"deleted": n, "purged": purge}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Progression
+# ─────────────────────────────────────────────────────────────────────────
+
+def set_stage_note(pid, stage, note=None, manual_done=None):
+    p = get(pid)
+    if not p:
+        return None
+    notes = p["stage_notes"]
+    entry = notes.get(stage, {})
+    if note is not None:
+        entry["note"] = note
+    if manual_done is not None:
+        entry["done"] = bool(manual_done)
+        log(pid, "stage", stage=stage,
+            detail=("marked done" if manual_done else "unmarked"))
+    notes[stage] = entry
+    db.exec_("UPDATE project SET stage_notes=?, updated_at=? WHERE id=?",
+             (json.dumps(notes), time.time(), pid))
+    return get(pid)
+
+
+def progress(pid):
+    p = get(pid)
+    if not p:
+        return {"stages": [], "n_done": 0, "n_total": 0, "percent": 0, "current": None}
+    pipeline = PIPELINES.get(p.get("kind") or "review", PIPELINES["review"])
+    notes = p["stage_notes"]
+    stages, n_done = [], 0
+    first_open = None
+    for key in pipeline:
+        label, check, blurb = STAGE_DEFS[key]
+        manual = bool(notes.get(key, {}).get("done"))
+        if check is None:
+            derived, detail = False, ""
+        else:
+            derived, detail = check(pid)
+        done = derived or manual
+        if done:
+            n_done += 1
+        elif first_open is None:
+            first_open = key
+        stages.append({
+            "id": key, "label": label, "blurb": blurb,
+            "done": done, "derived": derived, "manual": manual,
+            "detail": detail,
+            "note": notes.get(key, {}).get("note", ""),
+            "manual_only": check is None,
+        })
+    for s in stages:
+        s["state"] = ("done" if s["done"]
+                      else "active" if s["id"] == first_open
+                      else "waiting")
+        s["status"] = ("complete" if s["done"] else
+                       "in_progress" if s["id"] == first_open else "blocked")
+        s["completion_rule"] = STAGE_DEFS[s["id"]][2]
+    return {"stages": stages, "n_done": n_done, "n_total": len(stages),
+            "percent": round(100 * n_done / max(1, len(stages))),
+            "current": first_open,
+            "kind": p.get("kind"), "pipeline": pipeline}
+
+
+def log(pid, kind, stage=None, detail=""):
+    db.insert("project_event", {"id": db.new_id("ev_"), "project_id": pid,
+                                "kind": kind, "stage": stage, "detail": detail,
+                                "at": time.time()})
+
+
+def timeline(pid, limit=60):
+    return db.query("SELECT * FROM project_event WHERE project_id IS ? "
+                    "ORDER BY at DESC LIMIT ?", (pid, limit))
