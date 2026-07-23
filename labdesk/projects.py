@@ -1,4 +1,31 @@
-"""Projects: CRUD, progression and the project ledger."""
+"""
+Projects.
+
+Everything in this tool used to accumulate in one undifferentiated pile: one
+corpus, one list of datasets, one ledger. That is fine for a single question
+and useless the moment you have two, because a systematic review on spinal
+cord injury and a re-analysis of somebody's trial data have nothing to do with
+each other and should not be able to contaminate each other's PRISMA counts.
+
+A project owns its records, datasets, runs and figures. Switching projects
+changes what every pane sees. Nothing is shared except reviewers, who are
+people and work across projects, and the settings, which are preferences.
+
+## The progression
+
+A project has a `kind`, and the kind determines its stages. The stages are not
+a checklist you tick; each one reports whether it is done by **asking the
+database**, so the progress line cannot claim you screened 400 records if the
+screen table is empty. A stage can be manually marked done for the ones no
+database can verify, like "protocol registered", and that manual flag is
+recorded separately from the derived state so the two never get confused.
+
+Stage state is one of:
+    done      the derived check passed, or it was manually marked
+    active    the first stage that is not done; where you are now
+    blocked   an earlier stage it depends on is not done
+    waiting   available but not started
+"""
 
 import json
 import os
@@ -379,3 +406,37 @@ def log(pid, kind, stage=None, detail=""):
 def timeline(pid, limit=60):
     return db.query("SELECT * FROM project_event WHERE project_id IS ? "
                     "ORDER BY at DESC LIMIT ?", (pid, limit))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Adoption of unfiled work
+# ─────────────────────────────────────────────────────────────────────────
+
+def unfiled():
+    """Anything created before projects existed, or released by a deletion."""
+    return {
+        "records": _c("SELECT COUNT(*) c FROM record WHERE project_id IS NULL", ()),
+        "datasets": _c("SELECT COUNT(*) c FROM dataset WHERE project_id IS NULL", ()),
+        "runs": _c("SELECT COUNT(*) c FROM analysis_run WHERE project_id IS NULL", ()),
+        "figures": _c("SELECT COUNT(*) c FROM figure WHERE project_id IS NULL", ()),
+    }
+
+
+def adopt_unfiled(pid, what=("records", "datasets", "runs", "figures")):
+    """Assign everything currently unfiled to a project, so an existing
+    database is not stranded when projects arrive."""
+    table = {"records": "record", "datasets": "dataset",
+             "runs": "analysis_run", "figures": "figure"}
+    moved = {}
+    for key in what:
+        t = table.get(key)
+        if not t:
+            continue
+        n = _c(f"SELECT COUNT(*) c FROM {t} WHERE project_id IS NULL", ())
+        db.exec_(f"UPDATE {t} SET project_id=? WHERE project_id IS NULL", (pid,))
+        moved[key] = n
+    if any(moved.values()):
+        log(pid, "milestone",
+            detail="Adopted unfiled work: " +
+                   ", ".join(f"{v} {k}" for k, v in moved.items() if v))
+    return moved
