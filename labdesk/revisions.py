@@ -1,4 +1,4 @@
-"""Immutable dataset artifacts, versions and dictionary revisions."""
+"""Immutable dataset artifacts, versions and variable-dictionary revisions."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pandas as pd
 
 from . import db
 from .config import DATA_DIR
+
 
 SCHEMA_VERSION = 1
 
@@ -226,3 +228,111 @@ def create_dictionary(project_id: str, dataset_id: str, payload: dict,
                  (canonical_json(payload), request_hash(payload), rid,
                   dataset_id, project_id))
     return dictionary(project_id, dataset_id, rid)
+
+
+def _write_frame(frame: pd.DataFrame, dataset_id: str, version_id: str) -> tuple[str, str]:
+    """Write beside the artifact store, validate reload, then atomically rename."""
+    root = Path(DATA_DIR)
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        import pyarrow  # noqa: F401 -- feature probe for canonical typed storage
+    except Exception as exc:
+        raise RuntimeError(
+            "Versioned transforms require pyarrow so data types survive reload. "
+            "Install the declared core dependencies."
+        ) from exc
+    final = root / f"{dataset_id}_{version_id}.parquet"
+    fd, staged = tempfile.mkstemp(prefix=".labdesk-stage-", suffix=".parquet", dir=root)
+    os.close(fd)
+    try:
+        frame.to_parquet(staged, index=True)
+        loaded = pd.read_parquet(staged)
+        if frame_schema(loaded) != frame_schema(frame):
+            raise RuntimeError("Stored dataset did not reload with the same schema.")
+        os.replace(staged, final)
+    except Exception:
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+        raise
+    return str(final), "parquet"
+
+
+def transform(project_id: str, dataset_id: str, parent_id: str,
+              operation: dict) -> dict:
+    """Create one immutable derived version from an allowlisted operation."""
+    parent = get_version(project_id, dataset_id, parent_id)
+    if not parent:
+        raise KeyError("Parent dataset version not found in this project.")
+    from . import datasets
+    frame = datasets.read_any(parent["path"])
+    kind = (operation or {}).get("kind")
+    out = frame.copy()
+    if kind == "derive_transform":
+        source = operation.get("source")
+        target = str(operation.get("target") or "").strip()
+        how = operation.get("transform")
+        if source not in out.columns:
+            raise ValueError("Transform source is not a column in this version.")
+        if not target or target in out.columns:
+            raise ValueError("Choose a new, non-empty output column name.")
+        out[target] = datasets.apply_transform(out, source, how, operation.get("parameters"))
+    elif kind == "select_columns":
+        columns = operation.get("columns") or []
+        missing = [c for c in columns if c not in out.columns]
+        if not columns or missing:
+            raise ValueError(f"Select valid columns; unknown={missing}.")
+        out = out.loc[:, columns].copy()
+    elif kind == "filter_rows":
+        column, op, value = operation.get("column"), operation.get("operator"), operation.get("value")
+        if column not in out.columns:
+            raise ValueError("Filter column is not present.")
+        operators = {
+            "eq": out[column] == value, "ne": out[column] != value,
+            "lt": out[column] < value, "le": out[column] <= value,
+            "gt": out[column] > value, "ge": out[column] >= value,
+            "is_missing": out[column].isna(), "not_missing": out[column].notna(),
+        }
+        if op not in operators:
+            raise ValueError("Unsupported filter operator.")
+        out = out.loc[operators[op]].copy()
+    else:
+        raise ValueError("Unsupported version operation.")
+    vid = db.new_id("dv_")
+    path, storage = _write_frame(out, dataset_id, vid)
+    aid = _artifact(project_id, path, "application/vnd.apache.parquet")
+    prior_dict = dictionary(project_id, dataset_id)
+    inferred = datasets.infer_dictionary(out)
+    did = db.new_id("dict_")
+    now = time.time()
+    try:
+        with db.transaction():
+            db.insert("dataset_version", {
+                "id": vid, "project_id": project_id, "dataset_id": dataset_id,
+                "parent_id": parent_id, "artifact_id": aid, "storage_format": storage,
+                "schema_json": canonical_json(frame_schema(out)),
+                "semantic_sha": datasets.sha256_of_frame(out), "hash_version": 1,
+                "n_rows": len(out), "n_cols": out.shape[1],
+                "transform_spec": canonical_json(operation), "created_at": now,
+            })
+            db.insert("dictionary_revision", {
+                "id": did, "project_id": project_id, "dataset_version_id": vid,
+                "parent_id": prior_dict["id"], "payload": canonical_json(inferred),
+                "semantic_sha": datasets.sha256_of_dictionary(inferred),
+                "reviewed": 0, "revision": 1, "created_at": now,
+            })
+            db.exec_("UPDATE dataset SET path=?,sha256=?,dictionary=?,dictionary_sha=?,"
+                     "n_rows=?,n_cols=?,current_version_id=?,current_dictionary_revision_id=? "
+                     "WHERE id=? AND project_id=?",
+                     (path, datasets.sha256_of_frame(out), canonical_json(inferred),
+                      datasets.sha256_of_dictionary(inferred), len(out), out.shape[1],
+                      vid, did, dataset_id, project_id))
+        datasets._cache.pop(dataset_id, None)
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+    return get_version(project_id, dataset_id, vid)
