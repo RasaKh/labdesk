@@ -1,10 +1,11 @@
-"""Durable analysis drafts and hypothesis families."""
+"""Durable analysis drafts, hypothesis-family revisions and report snapshots."""
 
 from __future__ import annotations
 
 import time
 
 from . import db, revisions
+
 
 class RevisionConflict(RuntimeError):
     pass
@@ -93,3 +94,35 @@ def list_families(project_id: str) -> list[dict]:
     for row in rows:
         row["members"] = db.json_value(row["members"], [])
     return rows
+
+
+def create_report_snapshot(project_id: str, title: str, selection: dict,
+                           narrative="") -> dict:
+    run_ids = list((selection or {}).get("run_ids") or [])
+    figure_ids = list((selection or {}).get("figure_ids") or [])
+    for table, ids in (("analysis_run", run_ids), ("figure", figure_ids)):
+        if not ids:
+            continue
+        marks = ",".join("?" for _ in ids)
+        count = db.one(f"SELECT COUNT(*) c FROM {table} WHERE project_id IS ? "
+                       f"AND id IN ({marks})", (project_id, *ids))["c"]
+        if count != len(set(ids)):
+            raise ValueError(f"Report selection contains an inaccessible {table} item.")
+    sid = db.new_id("report_")
+    db.insert("report_snapshot", {
+        "id": sid, "project_id": project_id,
+        "title": title.strip() or "Untitled report snapshot",
+        "selection": revisions.canonical_json(selection or {}),
+        "narrative": narrative, "artifact_id": None, "created_at": time.time(),
+    })
+    return report_snapshot(project_id, sid)
+
+
+def report_snapshot(project_id: str, snapshot_id: str) -> dict:
+    row = db.one("SELECT * FROM report_snapshot WHERE id=? AND project_id=?",
+                 (snapshot_id, project_id))
+    if not row:
+        raise KeyError("Report snapshot not found in this project.")
+    row["selection"] = db.json_value(row["selection"], {})
+    return row
+
