@@ -1,4 +1,4 @@
-"""Durable analysis drafts."""
+"""Durable analysis drafts and hypothesis families."""
 
 from __future__ import annotations
 
@@ -50,4 +50,46 @@ def list_drafts(project_id: str) -> list[dict]:
                     (project_id,))
     for row in rows:
         row["spec"] = db.json_value(row["spec"], {})
+    return rows
+
+
+def create_family(project_id: str, name: str, alpha: float, correction: str,
+                  members: list, freeze=False) -> dict:
+    if not name.strip():
+        raise ValueError("Family name is required.")
+    if not 0 < float(alpha) < 1:
+        raise ValueError("Family alpha must be between 0 and 1.")
+    allowed = {"holm", "bonferroni", "hochberg", "bh", "by", "none"}
+    if correction not in allowed:
+        raise ValueError("Unsupported multiplicity correction.")
+    if not isinstance(members, list) or not members:
+        raise ValueError("A hypothesis family needs at least one declared member.")
+    prior = db.one("SELECT MAX(revision) revision FROM hypothesis_family "
+                   "WHERE project_id=? AND name=?", (project_id, name.strip()))
+    revision = int((prior or {}).get("revision") or 0) + 1
+    fid = db.new_id("fam_")
+    now = time.time()
+    db.insert("hypothesis_family", {
+        "id": fid, "project_id": project_id, "name": name.strip(),
+        "revision": revision, "alpha": float(alpha), "correction": correction,
+        "members": revisions.canonical_json(members),
+        "frozen_at": now if freeze else None, "created_at": now,
+    })
+    return get_family(project_id, fid)
+
+
+def get_family(project_id: str, family_id: str) -> dict:
+    row = db.one("SELECT * FROM hypothesis_family WHERE id=? AND project_id=?",
+                 (family_id, project_id))
+    if not row:
+        raise KeyError("Hypothesis family not found in this project.")
+    row["members"] = db.json_value(row["members"], [])
+    return row
+
+
+def list_families(project_id: str) -> list[dict]:
+    rows = db.query("SELECT * FROM hypothesis_family WHERE project_id=? "
+                    "ORDER BY name,revision DESC", (project_id,))
+    for row in rows:
+        row["members"] = db.json_value(row["members"], [])
     return rows
