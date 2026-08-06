@@ -1,4 +1,4 @@
-"""Evidence synthesis: dedup, reviewers, screening and adjudication."""
+"""Evidence synthesis: screening, PRISMA counts, risk of bias."""
 
 import json
 import hashlib
@@ -353,3 +353,220 @@ def resolve(record_id, stage, decision, rationale="", by=None):
             "predecessor_event_id": None, "created_at": time.time(),
         })
     return row
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  PRISMA
+# ─────────────────────────────────────────────────────────────────────────
+
+def _final_screen_states(project_id, stage):
+    """One adjudicated state per unique record in a project.
+
+    ``final`` is true only for a resolution or unanimous reviewer votes.
+    Disagreements retain a visible ``maybe`` decision for queue/progress
+    diagnostics but are not treated as an adjudicated inclusion/exclusion.
+    """
+    records = db.query("SELECT id FROM record WHERE project_id IS ? AND dedup_of IS NULL",
+                       (project_id,))
+    ids = {r["id"] for r in records}
+    states = {rid: {"decision": None, "reason": None, "final": False} for rid in ids}
+    if not ids:
+        return states
+    votes = db.query(
+        "SELECT s.record_id, s.decision, s.reason FROM screen s JOIN record r ON r.id=s.record_id "
+        "WHERE r.project_id IS ? AND s.stage=?", (project_id, stage))
+    by_record = {}
+    for v in votes:
+        by_record.setdefault(v["record_id"], []).append(v)
+    resolutions = {r["record_id"]: r for r in db.query(
+        "SELECT res.* FROM resolution res JOIN record r ON r.id=res.record_id "
+        "WHERE r.project_id IS ? AND res.stage=? AND res.superseded_at IS NULL",
+        (project_id, stage))}
+    for rid in ids:
+        if rid in resolutions:
+            states[rid] = {"decision": resolutions[rid]["decision"],
+                           "reason": None, "final": True}
+            continue
+        vv = by_record.get(rid, [])
+        if not vv:
+            continue
+        decisions = {v["decision"] for v in vv}
+        if len(decisions) == 1:
+            decision = next(iter(decisions))
+            reasons = {v.get("reason") for v in vv if v.get("reason")}
+            states[rid] = {"decision": decision,
+                           "reason": next(iter(reasons)) if len(reasons) == 1 else None,
+                           "final": True}
+        else:
+            states[rid] = {"decision": "maybe", "reason": None, "final": False}
+    return states
+
+
+def prisma_counts(project_id=None):
+    def c(sql, args=()):
+        r = db.one(sql, args)
+        return r["c"] if r else 0
+
+    identified_db = c("SELECT COUNT(*) c FROM record WHERE project_id IS ? "
+                      "AND source NOT IN ('ctgov','ictrp','ctis','isrctn')", (project_id,))
+    identified_reg = c("SELECT COUNT(*) c FROM record WHERE project_id IS ? "
+                       "AND source IN ('ctgov','ictrp','ctis','isrctn')", (project_id,))
+    dupes = c("SELECT COUNT(*) c FROM record WHERE project_id IS ? AND dedup_of IS NOT NULL",
+              (project_id,))
+    unique = identified_db + identified_reg - dupes
+    ta = _final_screen_states(project_id, "title_abstract")
+    ft = _final_screen_states(project_id, "full_text")
+    screened = sum(1 for x in ta.values() if x["decision"] is not None)
+    excl_ta = sum(1 for x in ta.values() if x.get("final") and x["decision"] == "exclude")
+    fulltext = sum(1 for x in ft.values() if x["decision"] is not None)
+    excl_ft = sum(1 for x in ft.values() if x.get("final") and x["decision"] == "exclude")
+    included = sum(1 for x in ft.values() if x.get("final") and x["decision"] == "include")
+    reason_counts = {}
+    for x in ft.values():
+        if x.get("final") and x["decision"] == "exclude" and x.get("reason"):
+            reason_counts[x["reason"]] = reason_counts.get(x["reason"], 0) + 1
+    reasons = [{"reason": k, "n": v} for k, v in
+               sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return {"kind": "screening",
+            "counts": {"identified_db": identified_db, "identified_reg": identified_reg,
+                       "duplicates": dupes, "after_dedup": unique,
+                       "screened": screened, "excluded_ta": excl_ta,
+                       "fulltext": fulltext, "excluded_ft": excl_ft,
+                       "included": included},
+            "exclusion_reasons": reasons,
+            "note": "Every number is derived from project-scoped screening and adjudication "
+                    "records, so final-flow counts reflect the decisions actually resolved."}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Risk of bias
+# ─────────────────────────────────────────────────────────────────────────
+
+INSTRUMENTS = {
+    "rob2": {
+        "label": "RoB 2 (randomised trials)",
+        "judgements": [("low", "Low"), ("some", "Some concerns"), ("high", "High")],
+        "domains": [
+            ("D1", "Randomisation process"),
+            ("D2", "Deviations from intended interventions"),
+            ("D3", "Missing outcome data"),
+            ("D4", "Measurement of the outcome"),
+            ("D5", "Selection of the reported result"),
+        ],
+        "rule": "Overall is high if any domain is high, some concerns if any is some.",
+    },
+    "robins_i": {
+        "label": "ROBINS-I (non-randomised studies of interventions)",
+        "judgements": [("low", "Low"), ("moderate", "Moderate"), ("serious", "Serious"),
+                       ("critical", "Critical"), ("unclear", "No information")],
+        "domains": [
+            ("D1", "Confounding"), ("D2", "Selection of participants"),
+            ("D3", "Classification of interventions"),
+            ("D4", "Deviations from intended interventions"),
+            ("D5", "Missing data"), ("D6", "Measurement of outcomes"),
+            ("D7", "Selection of the reported result"),
+        ],
+        "rule": "Overall takes the worst domain judgement.",
+    },
+    "nos": {
+        "label": "Newcastle-Ottawa Scale (cohort and case-control)",
+        "judgements": [("0", "0 stars"), ("1", "1 star"), ("2", "2 stars")],
+        "domains": [("S1", "Representativeness"), ("S2", "Selection of controls"),
+                    ("S3", "Ascertainment of exposure"), ("S4", "Outcome not present at start"),
+                    ("C1", "Comparability"), ("O1", "Assessment of outcome"),
+                    ("O2", "Adequate follow-up length"), ("O3", "Adequacy of follow-up")],
+        "rule": "Sum of stars, maximum 9. Seven or above is conventionally good quality.",
+    },
+    "quadas2": {
+        "label": "QUADAS-2 (diagnostic accuracy)",
+        "judgements": [("low", "Low"), ("high", "High"), ("unclear", "Unclear")],
+        "domains": [("D1", "Patient selection"), ("D2", "Index test"),
+                    ("D3", "Reference standard"), ("D4", "Flow and timing"),
+                    ("A1", "Applicability: patient selection"),
+                    ("A2", "Applicability: index test"),
+                    ("A3", "Applicability: reference standard")],
+        "rule": "Report risk of bias and applicability separately.",
+    },
+}
+
+
+def set_rob(record_id, instrument, domains, overall=None):
+    inst = INSTRUMENTS.get(instrument)
+    if not inst:
+        raise ValueError(f"Unknown instrument {instrument!r}.")
+    domains = {str(k): str(v) for k, v in (domains or {}).items()}
+    allowed_domains = {k for k, _ in inst["domains"]}
+    unknown = sorted(set(domains) - allowed_domains)
+    if unknown:
+        raise ValueError("Unknown domain(s) for this instrument: " + ", ".join(unknown))
+    allowed_values = {str(v) for v, _ in inst["judgements"]}
+    invalid = {k: v for k, v in domains.items() if v not in allowed_values}
+    if invalid:
+        raise ValueError("Invalid risk-of-bias judgement(s): " +
+                         ", ".join(f"{k}={v}" for k, v in sorted(invalid.items())))
+
+    # Newcastle-Ottawa awards at most one star in every domain except
+    # comparability, which can award two.  Enforce the instrument's own scale
+    # rather than allowing every domain to contribute two stars.
+    if instrument == "nos":
+        for key, value in domains.items():
+            limit = 2 if key == "C1" else 1
+            if int(value) > limit:
+                raise ValueError(f"{key} allows at most {limit} Newcastle-Ottawa star(s).")
+
+    if overall is None:
+        vals = list(domains.values())
+        complete = allowed_domains.issubset(domains)
+        if instrument == "rob2":
+            overall = ("incomplete" if not complete else
+                       "high" if "high" in vals else
+                       "some" if "some" in vals else "low")
+        elif instrument == "robins_i":
+            if not complete:
+                overall = "incomplete"
+            elif "critical" in vals:
+                overall = "critical"
+            elif "serious" in vals:
+                overall = "serious"
+            elif "moderate" in vals:
+                overall = "moderate"
+            elif "unclear" in vals:
+                overall = "unclear"
+            else:
+                overall = "low"
+        elif instrument == "nos":
+            stars = sum(int(v) for v in vals)
+            overall = f"{stars}/9" + (" (incomplete)" if not complete else "")
+        elif instrument == "quadas2":
+            risk_keys = {"D1", "D2", "D3", "D4"}
+            appl_keys = {"A1", "A2", "A3"}
+            def worst(keys):
+                xs = [domains[k] for k in keys if k in domains]
+                if not keys.issubset(domains):
+                    return "incomplete"
+                return "high" if "high" in xs else "unclear" if "unclear" in xs else "low"
+            overall = f"RoB: {worst(risk_keys)}; applicability: {worst(appl_keys)}"
+    row = {"id": db.new_id("rob_"),
+           "record_id": record_id, "instrument": instrument,
+           "domains": json.dumps(domains), "overall": overall,
+           "updated_at": time.time()}
+    row["id"] = db.upsert("rob", row, ("record_id", "instrument"))
+    return row
+
+
+def rob_summary(instrument="rob2", project_id=None):
+    inst = INSTRUMENTS.get(instrument, INSTRUMENTS["rob2"])
+    rows = db.query(
+        "SELECT rb.*, r.title, r.year, r.authors FROM rob rb JOIN record r "
+        "ON r.id = rb.record_id WHERE rb.instrument=? AND r.project_id IS ?",
+        (instrument, project_id))
+    out = []
+    for r in rows:
+        first = (r["authors"] or "").split(";")[0].strip()
+        out.append({"study": f"{first} {r['year'] or ''}".strip() or r["title"][:40],
+                    "judgements": json.loads(r["domains"] or "{}"),
+                    "overall": r["overall"]})
+    return {"kind": "rob", "instrument": instrument,
+            "domains": [d[0] for d in inst["domains"]],
+            "domain_labels": dict(inst["domains"]),
+            "rows": out, "rule": inst["rule"]}
