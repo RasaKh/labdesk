@@ -1,4 +1,12 @@
-"""Evidence synthesis: screening, PRISMA counts, risk of bias."""
+"""
+Evidence synthesis: deduplication, screening state, PRISMA counts,
+extraction forms and risk-of-bias instruments.
+
+The PRISMA numbers are derived from the database, never typed in. That means
+the diagram in the manuscript cannot drift out of step with what actually
+happened, which is the usual failure mode when the flow chart is drawn by
+hand at the end.
+"""
 
 import json
 import hashlib
@@ -6,6 +14,7 @@ import re
 import time
 
 from . import db
+from .schema import P, index
 
 # ─────────────────────────────────────────────────────────────────────────
 #  Deduplication
@@ -570,3 +579,128 @@ def rob_summary(instrument="rob2", project_id=None):
             "domains": [d[0] for d in inst["domains"]],
             "domain_labels": dict(inst["domains"]),
             "rows": out, "rule": inst["rule"]}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Extraction forms
+# ─────────────────────────────────────────────────────────────────────────
+
+DEFAULT_FORMS = {
+    "rct": {
+        "label": "Randomised trial",
+        "fields": [
+            P("design", "Design", "select", choices=["Parallel", "Crossover", "Cluster",
+                                                     "Factorial"]),
+            P("n_total", "Total randomised", "int"),
+            P("n_intervention", "n intervention", "int"),
+            P("n_control", "n control", "int"),
+            P("population", "Population", "textarea"),
+            P("intervention", "Intervention", "textarea"),
+            P("comparator", "Comparator", "textarea"),
+            P("primary_outcome", "Primary outcome", "text"),
+            P("followup", "Follow-up duration", "text"),
+            P("mean_int", "Mean, intervention", "number"),
+            P("sd_int", "SD, intervention", "number"),
+            P("mean_ctl", "Mean, control", "number"),
+            P("sd_ctl", "SD, control", "number"),
+            P("events_int", "Events, intervention", "int"),
+            P("events_ctl", "Events, control", "int"),
+            P("effect", "Reported effect estimate", "text"),
+            P("ci", "Reported interval", "text"),
+            P("funding", "Funding source", "text"),
+            P("conflicts", "Declared conflicts", "text"),
+            P("notes", "Notes", "textarea"),
+        ]},
+    "observational": {
+        "label": "Observational study",
+        "fields": [
+            P("design", "Design", "select",
+              choices=["Cohort", "Case-control", "Cross-sectional", "Case series"]),
+            P("n_total", "Total participants", "int"),
+            P("exposure", "Exposure", "textarea"),
+            P("outcome", "Outcome", "textarea"),
+            P("adjusted_for", "Adjusted for", "textarea"),
+            P("effect", "Adjusted effect estimate", "text"),
+            P("ci", "Interval", "text"),
+            P("followup", "Follow-up", "text"),
+            P("notes", "Notes", "textarea"),
+        ]},
+    "diagnostic": {
+        "label": "Diagnostic accuracy",
+        "fields": [
+            P("index_test", "Index test", "text"),
+            P("reference", "Reference standard", "text"),
+            P("tp", "True positives", "int"), P("fp", "False positives", "int"),
+            P("fn", "False negatives", "int"), P("tn", "True negatives", "int"),
+            P("threshold", "Threshold", "text"),
+            P("setting", "Setting", "text"),
+            P("notes", "Notes", "textarea"),
+        ]},
+}
+
+
+def save_extraction(record_id, form_id, payload):
+    row = {"id": db.new_id("ext_"),
+           "record_id": record_id, "form_id": form_id,
+           "payload": json.dumps(payload), "updated_at": time.time()}
+    row["id"] = db.upsert("extraction", row, ("record_id", "form_id"))
+    return row
+
+
+def extraction_table(form_id="rct", project_id=None):
+    rows = db.query(
+        "SELECT e.*, r.title, r.year, r.authors FROM extraction e JOIN record r "
+        "ON r.id = e.record_id WHERE e.form_id=? AND r.project_id IS ?",
+        (form_id, project_id))
+    form = DEFAULT_FORMS.get(form_id, DEFAULT_FORMS["rct"])
+    out = []
+    for r in rows:
+        d = json.loads(r["payload"] or "{}")
+        first = (r["authors"] or "").split(";")[0].strip()
+        d["_study"] = f"{first} {r['year'] or ''}".strip()
+        d["_record_id"] = r["record_id"]
+        out.append(d)
+    return {"form": form_id, "fields": [f["id"] for f in form["fields"]],
+            "labels": {f["id"]: f["label"] for f in form["fields"]}, "rows": out}
+
+
+def to_meta_frame(form_id="rct", project_id=None, measure="SMD"):
+    """Turn extracted arm-level data into the columns the meta-analysis expects."""
+    import math
+    tbl = extraction_table(form_id, project_id)
+    rows = []
+    for d in tbl["rows"]:
+        try:
+            if measure in ("SMD", "MD") and d.get("mean_int") is not None:
+                n1, n2 = float(d["n_intervention"]), float(d["n_control"])
+                m1, m2 = float(d["mean_int"]), float(d["mean_ctl"])
+                s1, s2 = float(d["sd_int"]), float(d["sd_ctl"])
+                sp = math.sqrt(((n1 - 1) * s1**2 + (n2 - 1) * s2**2) / (n1 + n2 - 2))
+                if measure == "MD":
+                    y = m1 - m2
+                    v = s1**2 / n1 + s2**2 / n2
+                else:
+                    d_raw = (m1 - m2) / sp
+                    J = 1 - 3 / (4 * (n1 + n2 - 2) - 1)
+                    y = d_raw * J
+                    v = (n1 + n2) / (n1 * n2) + y**2 / (2 * (n1 + n2))
+            elif measure in ("OR", "RR") and d.get("events_int") is not None:
+                a = float(d["events_int"]); n1 = float(d["n_intervention"])
+                c = float(d["events_ctl"]); n2 = float(d["n_control"])
+                b, dd = n1 - a, n2 - c
+                a, b, c, dd = [max(x, 0.5) for x in (a, b, c, dd)]
+                if measure == "OR":
+                    y = math.log((a * dd) / (b * c))
+                    v = 1 / a + 1 / b + 1 / c + 1 / dd
+                else:
+                    y = math.log((a / n1) / (c / n2))
+                    v = 1 / a - 1 / n1 + 1 / c - 1 / n2
+            else:
+                continue
+            rows.append({"study": d.get("_study", ""), "effect": y,
+                         "se": math.sqrt(v), "n": d.get("n_total")})
+        except (TypeError, ValueError, ZeroDivisionError, KeyError):
+            continue
+    return {"measure": measure, "rows": rows, "k": len(rows),
+            "note": ("Effects are on the log scale for ratio measures, which is what "
+                     "the meta-analysis expects.")}
