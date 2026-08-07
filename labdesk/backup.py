@@ -1,4 +1,4 @@
-"""Verified snapshots: create, verify and prune."""
+"""Verified snapshots of the database and immutable artifact store."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ import zipfile
 from pathlib import Path
 
 from . import db
-from .config import BACKUP_DIR, get
+from .config import BACKUP_DIR, DB_PATH, get
+
 
 _lock = threading.Lock()
 
@@ -120,6 +121,54 @@ def verify(path: str) -> dict:
         errors.append(f"{type(exc).__name__}: {exc}")
         manifest = None
     return {"ok": not errors, "errors": errors, "manifest": manifest}
+
+
+def restore(path: str, destination: str) -> dict:
+    """Restore a verified backup into a new directory without touching live data."""
+    checked = verify(path)
+    if not checked["ok"]:
+        raise RuntimeError("Backup verification failed: " + "; ".join(checked["errors"]))
+    target = Path(destination).resolve()
+    if target.exists() and any(target.iterdir()):
+        raise ValueError("Restore destination must be new or empty.")
+    target.mkdir(parents=True, exist_ok=True)
+    manifest = checked["manifest"]
+    with zipfile.ZipFile(path) as archive:
+        database_path = target / "labdesk.db"
+        database_path.write_bytes(archive.read(manifest["database"]["path"]))
+        artifact_root = target / "artifacts"
+        artifact_root.mkdir()
+        restored = []
+        for item in manifest.get("artifacts", []):
+            suffix = Path(item["path"]).suffix
+            output = artifact_root / f"{item['id']}{suffix}"
+            output.write_bytes(archive.read(item["path"]))
+            if _hash(output) != item["sha256"]:
+                raise RuntimeError(f"Restored artifact hash mismatch: {item['id']}")
+            restored.append((str(output), item["id"]))
+    conn = sqlite3.connect(database_path)
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        with conn:
+            conn.executemany("UPDATE artifact SET path=? WHERE id=?", restored)
+            conn.execute(
+                "UPDATE dataset SET path=(SELECT a.path FROM dataset_version v "
+                "JOIN artifact a ON a.id=v.artifact_id "
+                "WHERE v.id=dataset.current_version_id) "
+                "WHERE current_version_id IS NOT NULL"
+            )
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        foreign = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if integrity != "ok" or foreign:
+            raise RuntimeError(f"Restored database check failed: integrity={integrity}, foreign_keys={foreign}")
+    finally:
+        conn.close()
+    report = {"source": os.path.realpath(path), "destination": str(target),
+              "database": str(database_path), "artifacts_restored": len(restored),
+              "omissions": manifest.get("omissions", []), "verified": True}
+    (target / "restore_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report
+
 
 def listing() -> list[dict]:
     root = Path(BACKUP_DIR)
