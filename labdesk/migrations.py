@@ -1,9 +1,16 @@
-"""Numbered, transactional schema migrations."""
+"""Numbered, transactional schema migrations.
+
+The original application built its schema with CREATE TABLE IF NOT EXISTS and
+then patched columns at startup.  That made a successful start indistinguishable
+from a successful migration.  This module gives every post-v1 change an id,
+checksum and completion record while leaving the legacy tables readable.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import time
+
 
 MIGRATIONS = (
     (1, "versioned artifacts, attempts and durable jobs", r"""
@@ -158,6 +165,86 @@ CREATE TABLE IF NOT EXISTS hypothesis_family (
   frozen_at REAL,
   created_at REAL NOT NULL,
   UNIQUE(project_id, name, revision)
+);
+"""),
+    (3, "preserved source uploads", r"""
+CREATE TABLE IF NOT EXISTS dataset_source (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  dataset_id TEXT NOT NULL REFERENCES dataset(id) ON DELETE CASCADE,
+  artifact_id TEXT NOT NULL REFERENCES artifact(id),
+  original_name TEXT NOT NULL,
+  imported_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dataset_source
+  ON dataset_source(project_id,dataset_id,imported_at);
+"""),
+    (4, "append-only screening history", r"""
+ALTER TABLE resolution ADD COLUMN vote_sha TEXT;
+ALTER TABLE resolution ADD COLUMN superseded_at REAL;
+
+CREATE TABLE IF NOT EXISTS screening_event (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  record_id TEXT NOT NULL REFERENCES record(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL,
+  reviewer TEXT,
+  action TEXT NOT NULL,
+  decision TEXT,
+  reason TEXT,
+  predecessor_event_id TEXT REFERENCES screening_event(id),
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_screening_event_record
+  ON screening_event(project_id,record_id,stage,created_at);
+"""),
+    (5, "retrieval provenance and report-study identities", r"""
+CREATE TABLE IF NOT EXISTS search_execution (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  query_spec TEXT NOT NULL,
+  status TEXT NOT NULL,
+  n_returned INTEGER,
+  n_imported INTEGER,
+  n_duplicates INTEGER,
+  error TEXT,
+  started_at REAL NOT NULL,
+  ended_at REAL
+);
+CREATE TABLE IF NOT EXISTS retrieval_hit (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  search_execution_id TEXT NOT NULL REFERENCES search_execution(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  source_uid TEXT,
+  record_id TEXT REFERENCES record(id),
+  metadata TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_hit_search
+  ON retrieval_hit(project_id,search_execution_id);
+CREATE TABLE IF NOT EXISTS evidence_report (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  record_id TEXT NOT NULL REFERENCES record(id) ON DELETE CASCADE,
+  report_kind TEXT NOT NULL DEFAULT 'publication',
+  created_at REAL NOT NULL,
+  UNIQUE(project_id,record_id)
+);
+CREATE TABLE IF NOT EXISTS study (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS study_report (
+  project_id TEXT NOT NULL,
+  study_id TEXT NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  report_id TEXT NOT NULL REFERENCES evidence_report(id) ON DELETE CASCADE,
+  relationship TEXT NOT NULL DEFAULT 'primary',
+  created_at REAL NOT NULL,
+  PRIMARY KEY(project_id,study_id,report_id)
 );
 """),
 )
