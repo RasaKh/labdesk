@@ -142,6 +142,103 @@ PLOTS = [
       blurb="Percentage missing in each variable, ordered from most to least missing.",
       params=[]),
 
+    # Relationships
+    G("scatter_fit", "Scatter with fit", "Relationships", ["correlation", "regression"],
+      status=READY,
+      params=[P("fit", "Fit", "select", default="linear",
+                choices=[("none", "None"), ("linear", "Linear"),
+                         ("poly2", "Quadratic")]),
+              P("ci_band", "Linear-fit confidence band", "bool", default=True,
+                depends={"param": "fit", "equals": "linear"}),
+              P("annotate_r", "Annotate Pearson r and p", "bool", default=True,
+                depends={"param": "fit", "equals": "linear"})]),
+
+    G("corr_matrix", "Correlation matrix", "Relationships", ["correlation"], status=READY,
+      params=[P("show_values", "Show coefficients", "bool", default=True),
+              P("mask", "Show", "select", default="lower",
+                choices=[("full", "Full"), ("lower", "Lower triangle"),
+                         ("upper", "Upper triangle")])]),
+
+    G("residual_plots", "Regression diagnostics", "Relationships", ["regression"],
+      status=READY,
+      blurb="Residuals against fitted, Q-Q, scale-location and leverage in one panel.",
+      params=[P("which", "Panels", "multiselect",
+                default=["resid_fitted", "qq", "scale_location", "leverage"],
+                choices=[("resid_fitted", "Residuals vs fitted"), ("qq", "Normal Q-Q"),
+                         ("scale_location", "Scale-location"),
+                         ("leverage", "Residuals vs leverage")])]),
+
+    G("coef_forest", "Coefficient plot", "Relationships",
+      ["regression", "pairwise", "proportions", "cox"], status=READY,
+      params=[P("log_x", "Log x axis", "bool", default=False,
+                help="Ratio measures (odds, risk and hazard ratios) always use a log "
+                     "axis with the null line at 1."),
+              P("null_line", "Null line at", "number", default=0),
+              P("sort", "Sort by estimate", "bool", default=False),
+              P("drop_intercept", "Hide intercept", "bool", default=True)]),
+
+    G("pair_grid", "Scatter matrix", "Relationships", ["correlation"],
+      params=[P("diag", "Diagonal", "select", default="hist",
+                choices=["hist", "kde", "none"])]),
+
+    G("bland_altman", "Bland-Altman plot", "Relationships", ["bland_altman"], status=READY,
+      params=[P("show_ci", "Confidence intervals on bias and limits", "bool", default=True)]),
+
+    # Clinical
+    G("km_curve", "Kaplan-Meier curve", "Clinical", ["survival"], status=READY,
+      params=[P("ci_band", "Confidence bands", "bool", default=True),
+              P("at_risk", "Number-at-risk table", "bool", default=True),
+              P("p_annotation", "Annotate log-rank p", "bool", default=True),
+              P("y_from_zero", "y axis from 0", "bool", default=True,
+                help="Truncating the y axis exaggerates separation. Leave this on unless "
+                     "events are rare, and say so in the caption if you turn it off."),
+              P("xmax", "Maximum time", "number")]),
+
+    G("roc", "ROC curve", "Clinical", ["roc", "regression"], status=READY,
+      params=[P("show_auc", "Annotate AUC and interval", "bool", default=True),
+              P("diagonal", "Chance line", "bool", default=True),
+              P("mark_cutpoint", "Mark the chosen cutpoint", "bool", default=True)]),
+
+    G("pr_curve", "Precision-recall curve", "Clinical", ["roc"],
+      params=[P("baseline", "Prevalence baseline", "bool", default=True)]),
+
+    G("calibration", "Calibration plot", "Clinical", ["regression", "roc"],
+      params=[P("bins", "Bins", "int", default=10),
+              P("loess", "Smooth curve", "bool", default=True),
+              P("histogram", "Predicted probability histogram", "bool", default=True)]),
+
+    G("decision_curve", "Decision curve", "Clinical", ["roc", "regression"],
+      params=[P("show_all_none", "Show treat-all and treat-none", "bool", default=True)]),
+
+    G("forest", "Forest plot", "Clinical", ["meta", "meta_sensitivity"], status=READY,
+      blurb="Study estimates with weight-proportional markers, the pooled diamond, "
+            "and heterogeneity statistics in the footer.",
+      params=[P("log_x", "Log x axis", "bool", default=True),
+              P("prediction_interval", "Draw the prediction interval", "bool", default=True),
+              P("marker_scale", "Marker scaling", "number", default=1.0, adv=True),
+              P("xlim", "x limits", "text", placeholder="0.2, 5")]),
+
+    G("funnel", "Funnel plot", "Clinical", ["meta", "meta_bias"], status=READY,
+      params=[P("contours", "Significance contours", "bool", default=True)]),
+
+    G("forest_effect", "Effect estimate plot", "Clinical",
+      ["proportions", "diagnostic", "evalue"], status=READY,
+      params=[P("log_x", "Log x axis", "bool", default=False),
+              P("null_line", "Null line at", "number", default=1.0)]),
+
+    G("stacked_bar", "Stacked or grouped bar", "Clinical",
+      ["categorical", "crosstab", "proportions"], status=READY,
+      params=[P("mode", "Mode", "select", default="stacked",
+                choices=[("stacked", "Stacked"), ("grouped", "Grouped"),
+                         ("filled", "100% stacked")]),
+              P("labels", "Show values", "bool", default=True)]),
+
+    G("mosaic", "Mosaic plot", "Clinical", ["categorical", "crosstab"],
+      params=[P("shade_residuals", "Shade by residual", "bool", default=True)]),
+
+    G("baujat", "Baujat plot", "Clinical", ["meta", "meta_sensitivity"],
+      params=[]),
+
 ]
 
 REGISTRY = index(PLOTS)
