@@ -239,6 +239,87 @@ PLOTS = [
     G("baujat", "Baujat plot", "Clinical", ["meta", "meta_sensitivity"],
       params=[]),
 
+    # Bench
+    G("volcano", "Volcano plot", "Bench", ["diff_expression"],
+      params=[P("lfc_threshold", "log2 fold-change line", "number", default=1.0),
+              P("p_threshold", "Significance line", "number", default=0.05),
+              P("label_top", "Label top features", "int", default=10),
+              P("label_genes", "Always label", "text")]),
+
+    G("heatmap", "Heatmap", "Bench", ["diff_expression", "correlation"],
+      params=[P("cluster_rows", "Cluster rows", "bool", default=True),
+              P("cluster_cols", "Cluster columns", "bool", default=False),
+              P("scale", "Scale", "select", default="row",
+                choices=[("none", "None"), ("row", "By row (z)"), ("column", "By column")]),
+              P("annotate_groups", "Annotate group bar", "column")]),
+
+    G("standard_curve", "Standard curve", "Bench", ["elisa"], status=READY,
+      params=[P("log_x", "Log x axis", "bool", default=True),
+              P("show_unknowns", "Plot unknowns on the curve", "bool", default=True),
+              P("annotate_r2", "Annotate R²", "bool", default=True)]),
+
+    G("plate_heatmap", "Plate layout heatmap", "Bench", ["elisa"], status=READY,
+      blurb="96 or 384 well layout coloured by signal. Edge effects are visible here "
+            "and nowhere else.",
+      params=[P("plate", "Plate format", "select", default="96",
+                choices=[("96", "96 well"), ("384", "384 well")]),
+              P("annotate", "Show values", "bool", default=True)]),
+
+    G("ct_qc", "Replicate quality control", "Bench", ["qpcr"], status=READY,
+      params=[P("threshold", "Flag SD above", "number", default=0.5)]),
+
+    G("dose_curve", "Dose-response curve", "Bench", ["dose_response"],
+      params=[P("log_x", "Log dose axis", "bool", default=True),
+              P("annotate_ic50", "Annotate IC50", "bool", default=True)]),
+
+    G("pca_biplot", "PCA biplot", "Bench", ["embedding"],
+      params=[P("loadings", "Show loading vectors", "bool", default=True),
+              P("ellipses", "Group confidence ellipses", "bool", default=True),
+              P("label_points", "Label points", "bool", default=False)]),
+
+    G("scree", "Scree plot", "Bench", ["embedding"], status=READY,
+      params=[P("cumulative", "Cumulative line", "bool", default=True)]),
+
+    G("embedding", "Embedding scatter", "Bench", ["embedding"], status=READY,
+      params=[P("point_size", "Point size", "number", default=20)]),
+
+    G("dendrogram", "Dendrogram", "Bench", ["clustering"],
+      params=[P("orientation", "Orientation", "select", default="top",
+                choices=["top", "left"]),
+              P("colour_threshold", "Colour threshold", "number")]),
+
+    # Reporting diagrams
+    G("prisma", "PRISMA flow diagram", "Reporting diagrams", ["screening"], status=READY,
+      blurb="Generated from the screening state, so it can never disagree with the "
+            "counts in the manuscript.",
+      params=[]),
+
+    G("consort", "CONSORT flow diagram", "Reporting diagrams", ["flow"],
+      params=[P("arms", "Number of arms", "int", default=2, min=2, max=6)]),
+
+    G("rob_traffic", "Risk of bias traffic light", "Reporting diagrams", ["rob"],
+      status=READY,
+      params=[]),
+
+    G("power_curve", "Power curve", "Reporting diagrams", ["power"], status=READY,
+      params=[P("mark_target", "Mark the target", "bool", default=True),
+              P("reference_lines", "Reference lines at 80% and 90%", "bool", default=True)]),
+
+    G("null_distribution", "Permutation null", "Reporting diagrams", ["comparison"],
+      status=READY,
+      params=[P("mark_observed", "Mark the observed statistic", "bool", default=True)]),
+
+    G("bootstrap_dist", "Bootstrap distribution", "Reporting diagrams", ["comparison"],
+      status=READY,
+      params=[P("mark_ci", "Shade the interval", "bool", default=True)]),
+
+    G("pvalue_hist", "p value histogram", "Reporting diagrams", ["padjust"], status=READY,
+      blurb="A uniform histogram under the null; a spike near zero when there is signal. "
+            "Odd shapes point at a problem upstream.",
+      params=[P("bins", "Bins", "int", default=20)]),
+
+    G("tost_plot", "Equivalence plot", "Reporting diagrams", ["equivalence"], status=READY,
+      params=[P("show_bounds", "Shade the equivalence region", "bool", default=True)]),
 ]
 
 REGISTRY = index(PLOTS)
