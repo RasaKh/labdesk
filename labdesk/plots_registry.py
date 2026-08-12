@@ -1,12 +1,15 @@
 """
 PLOT_REGISTRY.
 
-Same contract as the test registry. Each plot declares which result kinds
-it can render, its own parameters, and whether it is implemented.
+Same contract as the test registry. Each plot declares which result kinds it
+can render, its own parameters, and whether it is implemented.
+
+Journal export sizing lives here rather than in the renderer because column
+widths are an editorial constraint, not a drawing detail: 89 mm single column
+and 183 mm double column cover Elsevier, Springer and most society journals.
 """
 
 from .schema import P, group_registry, index
-
 
 READY, STUB = "ready", "stub"
 
@@ -26,9 +29,11 @@ PALETTES = [
     ("nejm", "Journal editorial"),
 ]
 
+
 def G(id, label, group, kinds, blurb="", params=None, status=STUB):
     return {"id": id, "label": label, "group": group, "kinds": kinds,
             "blurb": blurb, "params": params or [], "status": status}
+
 
 # Parameters shared by anything that can carry significance annotation.
 SIG_PARAMS = [
@@ -72,6 +77,7 @@ COMMON = [
                                                       ("both", "Both")], adv=True),
     P("despine", "Remove top and right spines", "bool", default=True, adv=True),
 ]
+
 
 PLOTS = [
     # Group comparison
@@ -322,8 +328,10 @@ PLOTS = [
       params=[P("show_bounds", "Shade the equivalence region", "bool", default=True)]),
 ]
 
+
 REGISTRY = index(PLOTS)
 GROUPS = group_registry(PLOTS)
+
 
 def for_kind(kind):
     return [p for p in PLOTS if kind in p["kinds"]]
