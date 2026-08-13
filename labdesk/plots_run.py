@@ -5,12 +5,14 @@ The heart of this module is `layout_brackets`: significance brackets are
 stacked so they never collide or overlap the data.
 """
 
+import math
 import os
 import time
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .config import FIG_DIR, get
 from .plots_registry import JOURNAL_PRESETS
@@ -179,3 +181,190 @@ def draw_brackets(ax, items, params, ymax_data):
         top = max(top, y + tick * 3)
     ax.set_ylim(ax.get_ylim()[0], top * 1.05)
     return top
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Renderers
+# ─────────────────────────────────────────────────────────────────────────
+
+def _series(result):
+    """Pull group labels, centres and error from any comparison-like result."""
+    labels = [str(x) for x in (result.get("levels") or [])]
+    if result.get("mean"):
+        centre = list(result["mean"])
+        kind = "mean"
+    elif result.get("median"):
+        centre = list(result["median"])
+        kind = "median"
+    elif result.get("mean_fold_change"):
+        centre = list(result["mean_fold_change"])
+        kind = "mean"
+    else:
+        centre = []
+        kind = "mean"
+    return labels, centre, kind
+
+def _err(result, params, n_groups):
+    mode = params.get("error", get("error_bar_default", "ci95"))
+    if mode == "none":
+        return None, ""
+    sd = result.get("sd") or []
+    sem = result.get("sem") or []
+    n = result.get("n") or []
+    if mode == "sd" and sd:
+        return list(sd), "SD"
+    if not sem and sd and n:
+        sem = [s / math.sqrt(max(1, k)) for s, k in zip(sd, n)]
+    if mode == "sem" and sem:
+        return list(sem), "SEM"
+    if mode == "ci95" and sem:
+        from scipy import stats as st
+        return [s * st.t.ppf(0.975, max(1, k - 1)) for s, k in zip(sem, n or [30] * len(sem))], \
+               "95% CI"
+    if sem:
+        return list(sem), "SEM"
+    return None, ""
+
+def bar_sig(result, params, data=None):
+    labels, centre, ckind = _series(result)
+    if not labels:
+        raise ValueError("This result has no group summaries to plot.")
+    err, err_label = _err(result, params, len(labels))
+    fig, ax, theme = _figure(params)
+    x = np.arange(len(labels))
+    colours = _colours(params, len(labels))
+    w = float(params.get("bar_width", 0.6))
+    base = float(params.get("baseline", 0) or 0)
+    ax.bar(x, centre, width=w, color=colours, edgecolor="none", zorder=2, bottom=base)
+    if err:
+        ax.errorbar(x, np.array(centre) + base, yerr=err, fmt="none",
+                    ecolor=theme["fg"], elinewidth=0.8, capsize=2.5, zorder=3)
+    heights = {}
+    tops = []
+    for i, lab in enumerate(labels):
+        h = centre[i] + (err[i] if err else 0)
+        heights[lab] = h
+        tops.append(h)
+    if params.get("points", "jitter") != "none" and data is not None:
+        rng = np.random.default_rng(get("seed", 0))
+        for i, lab in enumerate(labels):
+            vals = data.get(lab, [])
+            if not len(vals):
+                continue
+            jit = rng.uniform(-w * 0.28, w * 0.28, len(vals))
+            ax.scatter(x[i] + jit, vals, s=5, c="none",
+                       edgecolors=theme["fg"], linewidths=0.5, zorder=4, alpha=0.75)
+            heights[lab] = max(heights[lab], float(np.max(vals)))
+            tops.append(float(np.max(vals)))
+    if params.get("log_y"):
+        ax.set_yscale("log")
+    if params.get("hline") not in (None, ""):
+        ax.axhline(float(params["hline"]), lw=0.7, ls="--", c=theme["fg"], alpha=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel(params.get("ylabel") or result.get("dv") or
+                  ("Fold change" if result.get("kind") == "qpcr" else "Value"))
+    if params.get("xlabel"):
+        ax.set_xlabel(params["xlabel"])
+    if params.get("title"):
+        ax.set_title(params["title"])
+    items = layout_brackets(result.get("comparisons"),
+                            {l: i for i, l in enumerate(labels)}, heights,
+                            params.get("only_significant", True))
+    draw_brackets(ax, items, params, max(tops) if tops else 1)
+    if err_label:
+        ax.text(1.0, -0.16, f"Error bars: {err_label}", transform=ax.transAxes,
+                ha="right", va="top", fontsize=plt.rcParams["font.size"] - 2,
+                color=theme["fg"], alpha=0.75)
+    return _save(fig, params, "bar_sig")
+
+def box(result, params, data=None):
+    labels, centre, _ = _series(result)
+    fig, ax, theme = _figure(params)
+    arrays = [np.asarray(data.get(l, [])) for l in labels] if data else []
+    if not any(len(a) for a in arrays):
+        raise ValueError("Box plots need the raw values; re-run the test with the "
+                         "dataset attached.")
+    whisk = {"1.5iqr": 1.5, "minmax": 0, "p5p95": (5, 95)}.get(
+        params.get("whisker", "1.5iqr"), 1.5)
+    bp = ax.boxplot(arrays, positions=np.arange(len(labels)), widths=0.55,
+                    patch_artist=True, notch=bool(params.get("notch")),
+                    whis=whisk if whisk else (0, 100),
+                    medianprops=dict(color=theme["fg"], lw=1.1),
+                    flierprops=dict(marker="o", ms=2, mfc="none",
+                                    mec=theme["fg"], alpha=0.6))
+    for patch, c in zip(bp["boxes"], _colours(params, len(labels))):
+        patch.set_facecolor(c)
+        patch.set_alpha(0.55)
+        patch.set_edgecolor(theme["fg"])
+        patch.set_linewidth(0.7)
+    heights = {}
+    if params.get("points", "jitter") != "none":
+        rng = np.random.default_rng(get("seed", 0))
+        for i, (l, a) in enumerate(zip(labels, arrays)):
+            if not len(a):
+                continue
+            ax.scatter(i + rng.uniform(-0.15, 0.15, len(a)), a, s=5, c="none",
+                       edgecolors=theme["fg"], linewidths=0.45, alpha=0.7, zorder=4)
+    for i, (l, a) in enumerate(zip(labels, arrays)):
+        heights[l] = float(np.max(a)) if len(a) else 0
+    ax.set_xticks(np.arange(len(labels)))
+    ax.set_xticklabels(labels)
+    ax.set_ylabel(params.get("ylabel") or result.get("dv") or "Value")
+    if params.get("title"):
+        ax.set_title(params["title"])
+    items = layout_brackets(result.get("comparisons"),
+                            {l: i for i, l in enumerate(labels)}, heights,
+                            params.get("only_significant", True))
+    draw_brackets(ax, items, params, max(heights.values()) if heights else 1)
+    return _save(fig, params, "box")
+
+def raincloud(result, params, data=None):
+    labels, _, _ = _series(result)
+    arrays = [np.asarray(data.get(l, [])) for l in labels] if data else []
+    if not any(len(a) for a in arrays):
+        raise ValueError("Raincloud plots need the raw values.")
+    fig, ax, theme = _figure(params, aspect=0.8)
+    cols = _colours(params, len(labels))
+    rng = np.random.default_rng(get("seed", 0))
+    heights = {}
+    for i, (lab, a) in enumerate(zip(labels, arrays)):
+        if not len(a):
+            continue
+        v = ax.violinplot([a], positions=[i], widths=0.8, showextrema=False)
+        for b in v["bodies"]:
+            verts = b.get_paths()[0].vertices
+            verts[:, 0] = np.clip(verts[:, 0], i, np.inf)
+            b.set_facecolor(cols[i]); b.set_alpha(0.45); b.set_edgecolor("none")
+        ax.boxplot([a], positions=[i - 0.12], widths=0.1, patch_artist=True,
+                   showfliers=False,
+                   boxprops=dict(facecolor="white", edgecolor=theme["fg"], lw=0.6),
+                   medianprops=dict(color=theme["fg"], lw=1.0),
+                   whiskerprops=dict(color=theme["fg"], lw=0.6),
+                   capprops=dict(color=theme["fg"], lw=0.6))
+        ax.scatter(i - 0.28 + rng.uniform(-0.06, 0.06, len(a)), a, s=4, c=cols[i],
+                   alpha=0.7, edgecolors="none", zorder=4)
+        heights[lab] = float(np.max(a))
+    ax.set_xticks(np.arange(len(labels)))
+    ax.set_xticklabels(labels)
+    ax.set_ylabel(params.get("ylabel") or result.get("dv") or "Value")
+    items = layout_brackets(result.get("comparisons"),
+                            {l: i for i, l in enumerate(labels)}, heights,
+                            params.get("only_significant", True))
+    draw_brackets(ax, items, params, max(heights.values()) if heights else 1)
+    return _save(fig, params, "raincloud")
+
+def means_ci(result, params, data=None):
+    labels, centre, _ = _series(result)
+    err, err_label = _err(result, params, len(labels))
+    fig, ax, theme = _figure(params)
+    x = np.arange(len(labels))
+    ax.errorbar(x, centre, yerr=err, fmt="o", ms=4, capsize=3, lw=0.9,
+                color=_colours(params, 1)[0], ecolor=theme["fg"])
+    if params.get("connect"):
+        ax.plot(x, centre, lw=0.8, color=_colours(params, 1)[0], alpha=0.6)
+    ax.set_xticks(x); ax.set_xticklabels(labels)
+    ax.set_xlim(-0.5, len(labels) - 0.5)
+    ax.set_ylabel(params.get("ylabel") or result.get("dv") or "Value")
+    ax.text(1.0, -0.16, f"Error bars: {err_label}", transform=ax.transAxes,
+            ha="right", va="top", fontsize=plt.rcParams["font.size"] - 2, alpha=0.75)
+    return _save(fig, params, "means_ci")
