@@ -368,3 +368,196 @@ def means_ci(result, params, data=None):
     ax.text(1.0, -0.16, f"Error bars: {err_label}", transform=ax.transAxes,
             ha="right", va="top", fontsize=plt.rcParams["font.size"] - 2, alpha=0.75)
     return _save(fig, params, "means_ci")
+
+def forest(result, params, data=None):
+    studies = result.get("studies") or []
+    rows = result.get("rows") or []
+    log_x = bool(params.get("log_x", result.get("log_scale", False)))
+    if rows and not studies:
+        studies = [{"label": r["label"], "effect": r["pooled"], "ci": r["ci"],
+                    "weight": 100 / len(rows)} for r in rows]
+    n = len(studies) + (2 if result.get("pooled") is not None else 0)
+    fig, ax, theme = _figure(params, aspect=max(0.45, 0.055 * n + 0.22))
+    ys = list(range(len(studies)))[::-1]
+    weights = [s.get("weight", 5) for s in studies]
+    wmax = max(weights) if weights else 1
+    col = _colours(params, 2)
+    for y, s in zip(ys, studies):
+        lo, hi = s["ci"]
+        ax.plot([lo, hi], [y, y], lw=0.9, color=theme["fg"])
+        ax.plot([lo, lo], [y - 0.14, y + 0.14], lw=0.9, color=theme["fg"])
+        ax.plot([hi, hi], [y - 0.14, y + 0.14], lw=0.9, color=theme["fg"])
+        size = 12 + 60 * (s.get("weight", 5) / wmax) * float(params.get("marker_scale", 1))
+        ax.scatter([s["effect"]], [y], s=size, marker="s", color=col[0], zorder=4)
+    null = result.get("null_line", 1.0 if log_x else 0.0)
+    ax.axvline(null, lw=0.7, ls="--", color=theme["fg"], alpha=0.6)
+    ymin = -1.2 if result.get("pooled") is not None else -0.5
+    if result.get("pooled") is not None:
+        lo, hi = result["pooled_ci"]
+        c = result["pooled"]
+        yp = -1.0
+        ax.fill([lo, c, hi, c], [yp, yp + 0.22, yp, yp - 0.22], color=col[1], zorder=5)
+        if params.get("prediction_interval", True) and result.get("prediction_interval"):
+            plo, phi = result["prediction_interval"]
+            ax.plot([plo, phi], [yp - 0.42, yp - 0.42], lw=1.2, color=col[1], alpha=0.6)
+            ax.plot([plo, plo], [yp - 0.52, yp - 0.32], lw=1.0, color=col[1], alpha=0.6)
+            ax.plot([phi, phi], [yp - 0.52, yp - 0.32], lw=1.0, color=col[1], alpha=0.6)
+            ymin = -1.9
+    if log_x:
+        ax.set_xscale("log")
+    xl = params.get("xlim")
+    if xl:
+        try:
+            a, b = [float(v) for v in str(xl).split(",")]
+            ax.set_xlim(a, b)
+        except Exception:
+            pass
+    ax.set_yticks(ys + ([-1.0] if result.get("pooled") is not None else []))
+    ax.set_yticklabels([s["label"] for s in studies] +
+                       (["Pooled"] if result.get("pooled") is not None else []))
+    ax.set_ylim(ymin, len(studies) - 0.4)
+    ax.set_xlabel(params.get("xlabel") or result.get("measure", "Effect"))
+    ax.yaxis.grid(False)
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="y", length=0)
+    h = result.get("heterogeneity")
+    if h:
+        ax.text(0.0, -0.14,
+                f"Heterogeneity: I² = {h['I2']:.0f}%, τ² = {h['tau2']:.3f}, "
+                f"Q({h['df']}) = {h['Q']:.2f}, {fmt_p(h['p'])}",
+                transform=ax.transAxes, fontsize=plt.rcParams["font.size"] - 2,
+                va="top", alpha=0.85)
+    return _save(fig, params, "forest")
+
+def funnel(result, params, data=None):
+    pts = result.get("points")
+    if not pts and result.get("studies"):
+        pts = [{"yi": s["yi"], "se": s["se"]} for s in result["studies"]]
+    if not pts:
+        raise ValueError("No study estimates to plot.")
+    yi = np.array([p["yi"] for p in pts])
+    se = np.array([p["se"] for p in pts])
+    centre = result.get("pooled_raw", float(np.sum(yi / se**2) / np.sum(1 / se**2)))
+    fig, ax, theme = _figure(params, aspect=0.85)
+    semax = se.max() * 1.1
+    if params.get("contours", True):
+        for z, alpha_v, shade in ((1.96, 0.05, "#e8e8e8"), (2.58, 0.01, "#f4f4f4")):
+            ax.fill([centre - z * semax, centre, centre + z * semax],
+                    [semax, 0, semax], color=shade, zorder=0)
+        ax.plot([centre - 1.96 * semax, centre], [semax, 0], lw=0.6, ls="--",
+                color=theme["fg"], alpha=0.5)
+        ax.plot([centre + 1.96 * semax, centre], [semax, 0], lw=0.6, ls="--",
+                color=theme["fg"], alpha=0.5)
+    ax.axvline(centre, lw=0.8, color=theme["fg"], alpha=0.7)
+    ax.scatter(yi, se, s=18, color=_colours(params, 1)[0], edgecolors=theme["fg"],
+               linewidths=0.4, zorder=4)
+    ax.set_ylim(semax, 0)
+    ax.set_xlabel(params.get("xlabel") or "Effect size")
+    ax.set_ylabel("Standard error")
+    return _save(fig, params, "funnel")
+
+def km_curve(result, params, data=None):
+    curves = result.get("curves") or []
+    fig, ax, theme = _figure(params, aspect=0.78)
+    cols = _colours(params, len(curves))
+    for i, c in enumerate(curves):
+        pts = c["points"]
+        t = [p["t"] for p in pts]
+        s = [p["s"] for p in pts]
+        ax.step(t, s, where="post", lw=1.1, color=cols[i], label=f"{c['label']} (n = {c['n']})")
+        if params.get("ci_band", True):
+            lo = [p["lo"] for p in pts]
+            hi = [p["hi"] for p in pts]
+            ax.fill_between(t, lo, hi, step="post", color=cols[i], alpha=0.15, lw=0)
+    if params.get("y_from_zero", True):
+        ax.set_ylim(0, 1.02)
+    if params.get("xmax") not in (None, ""):
+        ax.set_xlim(right=float(params["xmax"]))
+    ax.set_xlabel(params.get("xlabel") or "Time")
+    ax.set_ylabel(params.get("ylabel") or "Survival probability")
+    if len(curves) > 1:
+        ax.legend(frameon=False, loc="lower left")
+    if params.get("p_annotation", True) and result.get("p") is not None:
+        ax.text(0.98, 0.95, f"Log-rank {fmt_p(result['p'])}", transform=ax.transAxes,
+                ha="right", va="top", fontsize=plt.rcParams["font.size"] - 1)
+    if params.get("at_risk", True):
+        xmax = ax.get_xlim()[1]
+        ticks = np.linspace(0, xmax, 6)
+        lines = []
+        for c in curves:
+            row = []
+            for t in ticks:
+                nr = next((p["at_risk"] for p in reversed(c["points"]) if p["t"] <= t), c["n"])
+                row.append(str(nr))
+            lines.append((c["label"], row))
+        for j, (lab, row) in enumerate(lines):
+            y = -0.22 - 0.075 * j
+            ax.text(-0.02, y, lab, transform=ax.transAxes, ha="right", va="top",
+                    fontsize=plt.rcParams["font.size"] - 2, color=cols[j])
+            for t, v in zip(ticks, row):
+                ax.text(t / xmax, y, v, transform=ax.transAxes, ha="center", va="top",
+                        fontsize=plt.rcParams["font.size"] - 2)
+        ax.text(-0.02, -0.14, "Number at risk", transform=ax.transAxes, ha="right",
+                va="top", fontsize=plt.rcParams["font.size"] - 2, weight="bold")
+    return _save(fig, params, "km_curve")
+
+def roc(result, params, data=None):
+    fig, ax, theme = _figure(params, aspect=0.95)
+    curve = result.get("curve") or []
+    ax.plot([p["fpr"] for p in curve], [p["tpr"] for p in curve], lw=1.2,
+            color=_colours(params, 1)[0])
+    if params.get("diagonal", True):
+        ax.plot([0, 1], [0, 1], lw=0.7, ls="--", color=theme["fg"], alpha=0.5)
+    if params.get("mark_cutpoint", True) and result.get("best"):
+        b = result["best"]
+        ax.scatter([1 - b["specificity"]], [b["sensitivity"]], s=26, zorder=5,
+                   color=_colours(params, 2)[1], edgecolors=theme["fg"], linewidths=0.5)
+        ax.annotate(f"{b['threshold']:.3g}\nSn {b['sensitivity']:.2f} / "
+                    f"Sp {b['specificity']:.2f}",
+                    (1 - b["specificity"], b["sensitivity"]),
+                    textcoords="offset points", xytext=(8, -14),
+                    fontsize=plt.rcParams["font.size"] - 2)
+    if params.get("show_auc", True) and result.get("auc") is not None:
+        txt = f"AUC = {result['auc']:.3f}"
+        if result.get("auc_ci"):
+            txt += f"\n95% CI {result['auc_ci'][0]:.3f}-{result['auc_ci'][1]:.3f}"
+        ax.text(0.97, 0.06, txt, transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=plt.rcParams["font.size"] - 1)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1.02)
+    ax.set_xlabel(params.get("xlabel") or "1 - specificity")
+    ax.set_ylabel(params.get("ylabel") or "Sensitivity")
+    ax.set_aspect("equal")
+    return _save(fig, params, "roc")
+
+def scatter_fit(result, params, data=None):
+    if not data or "x" not in data:
+        raise ValueError("Scatter needs the raw x and y values.")
+    x = np.asarray(data["x"], float); y = np.asarray(data["y"], float)
+    ok = ~(np.isnan(x) | np.isnan(y))
+    x, y = x[ok], y[ok]
+    fig, ax, theme = _figure(params, aspect=0.8)
+    ax.scatter(x, y, s=10, color=_colours(params, 1)[0], alpha=0.75,
+               edgecolors="none", zorder=3)
+    fit = params.get("fit", "linear")
+    if fit != "none" and len(x) > 2:
+        from scipy import stats as st
+        xs = np.linspace(x.min(), x.max(), 100)
+        if fit == "poly2":
+            c = np.polyfit(x, y, 2)
+            ax.plot(xs, np.polyval(c, xs), lw=1.1, color=theme["fg"])
+        else:
+            sl, ic, r, p, se = st.linregress(x, y)
+            ax.plot(xs, sl * xs + ic, lw=1.1, color=theme["fg"])
+            if params.get("ci_band", True):
+                n = len(x)
+                sy = np.sqrt(np.sum((y - (sl * x + ic)) ** 2) / (n - 2))
+                sx = np.sqrt(1 / n + (xs - x.mean()) ** 2 / np.sum((x - x.mean()) ** 2))
+                t = st.t.ppf(0.975, n - 2)
+                ax.fill_between(xs, sl * xs + ic - t * sy * sx, sl * xs + ic + t * sy * sx,
+                                color=theme["fg"], alpha=0.12, lw=0)
+            if params.get("annotate_r", True):
+                ax.text(0.03, 0.95, f"r = {r:.2f}, {fmt_p(p)}", transform=ax.transAxes,
+                        va="top", fontsize=plt.rcParams["font.size"] - 1)
+    ax.set_xlabel(params.get("xlabel") or data.get("xlabel", "x"))
+    ax.set_ylabel(params.get("ylabel") or data.get("ylabel", "y"))
+    return _save(fig, params, "scatter_fit")
