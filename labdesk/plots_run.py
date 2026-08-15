@@ -664,3 +664,182 @@ def pvalue_hist(result, params, data=None):
     ax.set_xlabel("p value")
     ax.set_ylabel("Count")
     return _save(fig, params, "pvalue_hist")
+
+def coef_forest(result, params, data=None):
+    coefs = result.get("coefficients") or []
+    if params.get("drop_intercept", True):
+        coefs = [c for c in coefs if c["term"] != "(Intercept)"]
+    if params.get("sort"):
+        coefs = sorted(coefs, key=lambda c: c["estimate"])
+    fig, ax, theme = _figure(params, aspect=max(0.4, 0.075 * len(coefs) + 0.24))
+    ys = list(range(len(coefs)))[::-1]
+    for y, c in zip(ys, coefs):
+        ax.plot(c["ci"], [y, y], lw=0.9, color=theme["fg"])
+        ax.scatter([c["estimate"]], [y], s=20, color=_colours(params, 1)[0], zorder=4)
+    # A ratio's null is 1 and its scale is multiplicative; 0 cannot sit on a log axis.
+    ratio = bool(result.get("ratio_scale"))
+    null = 1.0 if ratio else float(params.get("null_line", 0))
+    ax.axvline(null, lw=0.7, ls="--", color=theme["fg"], alpha=0.6)
+    if ratio or params.get("log_x"):
+        ax.set_xscale("log")
+        # Plain 0.5, 1, 2 rather than 5x10^-1, 10^0.
+        from matplotlib.ticker import FuncFormatter, LogLocator
+        ax.xaxis.set_major_locator(LogLocator(base=2.0, subs=(1.0,)))
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+        ax.xaxis.set_minor_formatter(FuncFormatter(lambda v, _: ""))
+    ax.set_yticks(ys); ax.set_yticklabels([c["term"] for c in coefs])
+    ax.set_xlabel(params.get("xlabel") or result.get("measure", "Estimate"))
+    ax.yaxis.grid(False)
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="y", length=0)
+    return _save(fig, params, "coef_forest")
+
+def embedding(result, params, data=None):
+    pts = result.get("points") or []
+    fig, ax, theme = _figure(params, aspect=0.85)
+    labs = sorted({p["label"] for p in pts if p.get("label")})
+    if labs:
+        cols = _colours(params, len(labs))
+        for i, l in enumerate(labs):
+            sel = [p for p in pts if p["label"] == l]
+            ax.scatter([p["x"] for p in sel], [p["y"] for p in sel],
+                       s=float(params.get("point_size", 20)), color=cols[i], label=l,
+                       alpha=0.8, edgecolors="none")
+        ax.legend(frameon=False, fontsize=plt.rcParams["font.size"] - 2)
+    else:
+        ax.scatter([p["x"] for p in pts], [p["y"] for p in pts],
+                   s=float(params.get("point_size", 20)),
+                   color=_colours(params, 1)[0], alpha=0.8, edgecolors="none")
+    al = result.get("axis_labels", ["1", "2"])
+    ax.set_xlabel(params.get("xlabel") or al[0])
+    ax.set_ylabel(params.get("ylabel") or al[1])
+    return _save(fig, params, "embedding")
+
+pca_biplot = embedding
+
+def scree(result, params, data=None):
+    exp = result.get("explained") or []
+    fig, ax, theme = _figure(params, aspect=0.7)
+    x = np.arange(1, len(exp) + 1)
+    ax.bar(x, exp, color=_colours(params, 1)[0], width=0.6)
+    if params.get("cumulative", True):
+        ax2 = ax.twinx()
+        ax2.plot(x, np.cumsum(exp), lw=1.0, marker="o", ms=3, color=theme["fg"])
+        ax2.set_ylabel("Cumulative %")
+        ax2.set_ylim(0, 105)
+    ax.set_xlabel("Component"); ax.set_ylabel("Variance explained (%)")
+    ax.set_xticks(x)
+    return _save(fig, params, "scree")
+
+def tost_plot(result, params, data=None):
+    fig, ax, theme = _figure(params, aspect=0.45)
+    lo, hi = result["bounds"]
+    if params.get("show_bounds", True):
+        ax.axvspan(lo, hi, color=_colours(params, 2)[1], alpha=0.15, lw=0)
+    ax.axvline(0, lw=0.7, ls="--", color=theme["fg"], alpha=0.6)
+    ax.axvline(lo, lw=0.8, color=_colours(params, 2)[1])
+    ax.axvline(hi, lw=0.8, color=_colours(params, 2)[1])
+    ci = result["tost_ci"]
+    ax.plot(ci, [0, 0], lw=1.4, color=theme["fg"])
+    ax.scatter([result["mean_diff"]], [0], s=30, color=_colours(params, 1)[0], zorder=4)
+    ax.set_yticks([])
+    ax.set_ylim(-0.5, 0.5)
+    ax.set_xlabel(params.get("xlabel") or "Difference")
+    ax.spines["left"].set_visible(False)
+    return _save(fig, params, "tost_plot")
+
+def null_distribution(result, params, data=None):
+    vals = result.get("null_sample") or result.get("boot_sample") or []
+    fig, ax, theme = _figure(params, aspect=0.6)
+    ax.hist(vals, bins=40, color=_colours(params, 1)[0], alpha=0.85,
+            edgecolor="white", linewidth=0.3)
+    if params.get("mark_observed", True):
+        ax.axvline(result["statistic"], lw=1.1, color=_colours(params, 2)[1])
+    ax.set_xlabel("Statistic under the null")
+    ax.set_ylabel("Count")
+    return _save(fig, params, "null_distribution")
+
+def bootstrap_dist(result, params, data=None):
+    vals = result.get("boot_sample") or []
+    if not vals:
+        raise ValueError("No bootstrap sample is stored in this result.")
+    fig, ax, theme = _figure(params, aspect=0.6)
+    ax.hist(vals, bins=40, color=_colours(params, 1)[0], alpha=0.85,
+            edgecolor="white", linewidth=0.3)
+    if params.get("mark_ci", True) and result.get("diff_ci"):
+        lo, hi = result["diff_ci"]
+        ax.axvspan(lo, hi, color=_colours(params, 2)[1], alpha=0.15, lw=0)
+    if result.get("statistic") is not None:
+        ax.axvline(result["statistic"], lw=1.1, color=_colours(params, 2)[1])
+    ax.set_xlabel("Bootstrap statistic")
+    ax.set_ylabel("Count")
+    return _save(fig, params, "bootstrap_dist")
+
+def stacked_bar(result, params, data=None):
+    counts = np.array(result.get("counts") or [], float)
+    if counts.size == 0:
+        raise ValueError("No counts to plot.")
+    rows = result.get("levels_row") or []
+    cols_l = result.get("levels_col") or []
+    if result.get("kind") == "proportions":
+        rows = result.get("levels", [])
+        cols_l = result.get("outcome_levels", [])
+    fig, ax, theme = _figure(params)
+    cols = _colours(params, counts.shape[1])
+    mode = params.get("mode", "stacked")
+    x = np.arange(len(rows))
+    if mode == "grouped":
+        w = 0.8 / counts.shape[1]
+        for j in range(counts.shape[1]):
+            ax.bar(x + j * w - 0.4 + w / 2, counts[:, j], width=w, color=cols[j],
+                   label=str(cols_l[j]) if j < len(cols_l) else str(j))
+    else:
+        vals = counts / counts.sum(axis=1, keepdims=True) * 100 if mode == "filled" else counts
+        bottom = np.zeros(len(rows))
+        for j in range(counts.shape[1]):
+            ax.bar(x, vals[:, j], bottom=bottom, width=0.6, color=cols[j],
+                   label=str(cols_l[j]) if j < len(cols_l) else str(j))
+            bottom += vals[:, j]
+    if params.get("labels", True):
+        for patch in ax.patches:
+            h = patch.get_height()
+            if not np.isfinite(h) or h == 0:
+                continue
+            y = patch.get_y() + h / 2 if mode != "grouped" else patch.get_y() + h
+            va = "center" if mode != "grouped" else "bottom"
+            txt = f"{h:.1f}%" if mode == "filled" else f"{h:g}"
+            ax.text(patch.get_x() + patch.get_width() / 2, y, txt,
+                    ha="center", va=va, fontsize=plt.rcParams["font.size"] - 3)
+    ax.set_xticks(x); ax.set_xticklabels([str(r) for r in rows])
+    ax.set_ylabel(params.get("ylabel") or ("Percent" if mode == "filled" else "Count"))
+    ax.legend(frameon=False, fontsize=plt.rcParams["font.size"] - 2)
+    return _save(fig, params, "stacked_bar")
+
+def forest_effect(result, params, data=None):
+    items = []
+    for m in result.get("metrics", []):
+        if m.get("ci"):
+            items.append((m["name"], m["value"], m["ci"]))
+    eff = result.get("effects") or {}
+    for key, lab in (("risk_ratio", "Risk ratio"), ("odds_ratio", "Odds ratio"),
+                     ("risk_difference", "Risk difference")):
+        if eff.get(key) is not None:
+            ci = eff.get(key.split("_")[0][:2] + "_ci") or eff.get(f"{key}_ci")
+            items.append((lab, eff[key], ci or [eff[key], eff[key]]))
+    if not items:
+        raise ValueError("No interval estimates in this result.")
+    fig, ax, theme = _figure(params, aspect=max(0.35, 0.1 * len(items) + 0.22))
+    ys = list(range(len(items)))[::-1]
+    for y, (lab, v, ci) in zip(ys, items):
+        ax.plot(ci, [y, y], lw=0.9, color=theme["fg"])
+        ax.scatter([v], [y], s=22, color=_colours(params, 1)[0], zorder=4)
+    ax.axvline(float(params.get("null_line", 1.0)), lw=0.7, ls="--",
+               color=theme["fg"], alpha=0.6)
+    if params.get("log_x"):
+        if any(min(ci) <= 0 for _, _, ci in items):
+            raise ValueError("Log x axis requires every plotted confidence interval to be positive.")
+        ax.set_xscale("log")
+    ax.set_yticks(ys); ax.set_yticklabels([i[0] for i in items])
+    ax.yaxis.grid(False); ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="y", length=0)
+    return _save(fig, params, "forest_effect")
