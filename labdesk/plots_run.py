@@ -561,3 +561,106 @@ def scatter_fit(result, params, data=None):
     ax.set_xlabel(params.get("xlabel") or data.get("xlabel", "x"))
     ax.set_ylabel(params.get("ylabel") or data.get("ylabel", "y"))
     return _save(fig, params, "scatter_fit")
+
+def bland_altman(result, params, data=None):
+    m = np.asarray(result["means"], float)
+    d = np.asarray(result["diffs"], float)
+    fig, ax, theme = _figure(params, aspect=0.8)
+    ax.scatter(m, d, s=10, color=_colours(params, 1)[0], alpha=0.8, edgecolors="none")
+    ax.axhline(result["bias"], lw=1.0, color=theme["fg"])
+    for v, lab in ((result["loa"][0], "-1.96 SD"), (result["loa"][1], "+1.96 SD")):
+        ax.axhline(v, lw=0.8, ls="--", color=theme["fg"], alpha=0.7)
+        ax.text(ax.get_xlim()[1], v, f" {lab}\n {v:.3g}", va="center",
+                fontsize=plt.rcParams["font.size"] - 2)
+    if params.get("show_ci", True):
+        for lo, hi in (result["bias_ci"], result["loa_lower_ci"], result["loa_upper_ci"]):
+            ax.axhspan(lo, hi, color=theme["fg"], alpha=0.08, lw=0)
+    ax.set_xlabel(params.get("xlabel") or "Mean of the two methods")
+    ax.set_ylabel(params.get("ylabel") or "Difference")
+    ax.text(0.02, 0.03, f"Bias {result['bias']:.3g}, SD {result['sd_diff']:.3g}",
+            transform=ax.transAxes, fontsize=plt.rcParams["font.size"] - 2)
+    return _save(fig, params, "bland_altman")
+
+def standard_curve(result, params, data=None):
+    fig, ax, theme = _figure(params, aspect=0.8)
+    std = result["standards"]
+    curve = result["curve"]
+    ax.plot([c["x"] for c in curve], [c["y"] for c in curve], lw=1.1,
+            color=_colours(params, 1)[0])
+    ax.scatter([s["conc"] for s in std], [s["od"] for s in std], s=18,
+               color=theme["fg"], zorder=4)
+    if params.get("log_x", True):
+        ax.set_xscale("log")
+    if params.get("show_unknowns", True):
+        u = [x for x in result["unknowns"] if x.get("concentration")]
+        if u:
+            ax.scatter([x["concentration"] for x in u], [x["od"] for x in u], s=8,
+                       marker="x", color=_colours(params, 2)[1], alpha=0.8, zorder=3)
+    if params.get("annotate_r2", True):
+        ax.text(0.03, 0.95, f"R² = {result['r_squared']:.4f}", transform=ax.transAxes,
+                va="top", fontsize=plt.rcParams["font.size"] - 1)
+    ax.set_xlabel(params.get("xlabel") or "Concentration")
+    ax.set_ylabel(params.get("ylabel") or "Optical density")
+    return _save(fig, params, "standard_curve")
+
+def power_curve(result, params, data=None):
+    fig, ax, theme = _figure(params, aspect=0.72)
+    pts = result.get("curve") or []
+    ax.plot([p["x"] for p in pts], [p["y"] for p in pts], lw=1.2,
+            color=_colours(params, 1)[0])
+    if params.get("reference_lines", True):
+        for v in (0.8, 0.9):
+            ax.axhline(v, lw=0.6, ls="--", color=theme["fg"], alpha=0.5)
+            ax.text(ax.get_xlim()[1], v, f" {v:.0%}", va="center",
+                    fontsize=plt.rcParams["font.size"] - 2)
+    if params.get("mark_target", True) and result.get("n_per_group"):
+        ax.axvline(result["n_per_group"], lw=0.7, color=_colours(params, 2)[1])
+    ax.set_ylim(0, 1.02)
+    ax.set_xlabel(params.get("xlabel") or result.get("curve_x", "n"))
+    ax.set_ylabel("Power")
+    return _save(fig, params, "power_curve")
+
+def qq(result, params, data=None):
+    from scipy import stats as st
+    vals = np.asarray(data.get("values", []), float)
+    vals = vals[~np.isnan(vals)]
+    if not len(vals):
+        raise ValueError("No values to plot.")
+    fig, ax, theme = _figure(params, aspect=0.9)
+    (osm, osr), (slope, ic, r) = st.probplot(vals, dist=params.get("dist", "norm"))
+    ax.scatter(osm, osr, s=9, color=_colours(params, 1)[0], alpha=0.8, edgecolors="none")
+    ax.plot(osm, slope * osm + ic, lw=1.0, color=theme["fg"])
+    ax.set_xlabel("Theoretical quantiles")
+    ax.set_ylabel("Sample quantiles")
+    ax.text(0.03, 0.95, f"R = {r:.3f}", transform=ax.transAxes, va="top",
+            fontsize=plt.rcParams["font.size"] - 1)
+    return _save(fig, params, "qq")
+
+def hist(result, params, data=None):
+    vals = np.asarray(data.get("values", []), float)
+    vals = vals[~np.isnan(vals)]
+    fig, ax, theme = _figure(params, aspect=0.7)
+    bins = params.get("bins", "auto")
+    nb = int(params.get("n_bins", 20)) if bins == "custom" else \
+        ("fd" if bins == "fd" else "sturges" if bins == "sturges" else "auto")
+    ax.hist(vals, bins=nb, color=_colours(params, 1)[0], alpha=0.8, edgecolor="white",
+            linewidth=0.4, density=params.get("density", True))
+    if params.get("normal_overlay"):
+        from scipy import stats as st
+        xs = np.linspace(vals.min(), vals.max(), 200)
+        ax.plot(xs, st.norm.pdf(xs, vals.mean(), vals.std(ddof=1)), lw=1.0,
+                color=theme["fg"])
+    ax.set_xlabel(params.get("xlabel") or data.get("label", "Value"))
+    ax.set_ylabel(params.get("ylabel") or ("Density" if params.get("density", True) else "Count"))
+    return _save(fig, params, "hist")
+
+def pvalue_hist(result, params, data=None):
+    ps = [r["p_raw"] for r in result.get("rows", [])]
+    fig, ax, theme = _figure(params, aspect=0.7)
+    ax.hist(ps, bins=int(params.get("bins", 20)), range=(0, 1),
+            color=_colours(params, 1)[0], alpha=0.85, edgecolor="white", linewidth=0.4)
+    ax.axhline(len(ps) / int(params.get("bins", 20)), lw=0.7, ls="--",
+               color=theme["fg"], alpha=0.6)
+    ax.set_xlabel("p value")
+    ax.set_ylabel("Count")
+    return _save(fig, params, "pvalue_hist")
