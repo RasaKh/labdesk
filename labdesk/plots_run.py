@@ -5,6 +5,7 @@ The heart of this module is `layout_brackets`: significance brackets are
 stacked so they never collide or overlap the data.
 """
 
+import io
 import math
 import os
 import time
@@ -14,8 +15,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from . import db
 from .config import FIG_DIR, get
-from .plots_registry import JOURNAL_PRESETS
+from .plots_registry import JOURNAL_PRESETS, REGISTRY
 from .stats_run import fmt_p, stars
 
 
@@ -843,3 +845,210 @@ def forest_effect(result, params, data=None):
     ax.yaxis.grid(False); ax.spines["left"].set_visible(False)
     ax.tick_params(axis="y", length=0)
     return _save(fig, params, "forest_effect")
+
+def missing_map(result, params, data=None):
+    cols = result.get("columns") or []
+    per = {r["column"]: r["pct"] for r in result.get("per_column", [])}
+    fig, ax, theme = _figure(params, aspect=0.6)
+    vals = [per.get(c, 0) for c in cols]
+    order = np.argsort(vals)[::-1]
+    ax.barh([cols[i] for i in order][:40], [vals[i] for i in order][:40],
+            color=_colours(params, 1)[0], height=0.7)
+    ax.set_xlabel("Missing (%)")
+    ax.invert_yaxis()
+    return _save(fig, params, "missing_map")
+
+def plate_heatmap(result, params, data=None):
+    unknowns = result.get("unknowns") or []
+    fmt = params.get("plate", "96")
+    nrow, ncol = (8, 12) if fmt == "96" else (16, 24)
+    grid = np.full((nrow, ncol), np.nan)
+    for u in unknowns:
+        lab = str(u.get("label") or "")
+        if len(lab) < 2:
+            continue
+        r = ord(lab[0].upper()) - 65
+        try:
+            c = int(lab[1:]) - 1
+        except ValueError:
+            continue
+        if 0 <= r < nrow and 0 <= c < ncol:
+            grid[r, c] = u["od"]
+    fig, ax, theme = _figure(params, aspect=nrow / ncol * 1.1)
+    im = ax.imshow(grid, cmap="viridis", aspect="auto")
+    ax.set_xticks(range(ncol)); ax.set_xticklabels(range(1, ncol + 1),
+                                                   fontsize=plt.rcParams["font.size"] - 3)
+    ax.set_yticks(range(nrow)); ax.set_yticklabels([chr(65 + i) for i in range(nrow)],
+                                                   fontsize=plt.rcParams["font.size"] - 3)
+    if params.get("annotate", True):
+        for r in range(nrow):
+            for c in range(ncol):
+                if np.isfinite(grid[r, c]):
+                    ax.text(c, r, f"{grid[r, c]:.2g}", ha="center", va="center",
+                            fontsize=max(4, plt.rcParams["font.size"] - 5), color="white")
+    fig.colorbar(im, ax=ax, shrink=0.8, label="OD")
+    ax.yaxis.grid(False); ax.xaxis.grid(False)
+    return _save(fig, params, "plate_heatmap")
+
+def ct_qc(result, params, data=None):
+    flags = result.get("qc_flags") or []
+    fig, ax, theme = _figure(params, aspect=0.6)
+    if flags:
+        labs = [f"{f['sample']}/{f['gene']}" for f in flags][:30]
+        ax.barh(labs, [f["sd"] for f in flags][:30], color=_colours(params, 2)[1],
+                height=0.7)
+    ax.axvline(float(params.get("threshold", 0.5)), lw=0.8, ls="--", color=theme["fg"])
+    ax.set_xlabel("Replicate SD (Ct)")
+    ax.invert_yaxis()
+    return _save(fig, params, "ct_qc")
+
+def corr_matrix(result, params, data=None):
+    m = result.get("matrix")
+    if not m:
+        raise ValueError("Select three or more variables to draw a matrix.")
+    vals = np.array(m["values"], float)
+    labs = m["labels"]
+    if params.get("mask", "lower") == "lower":
+        vals = np.where(np.triu(np.ones_like(vals), 1) > 0, np.nan, vals)
+    elif params.get("mask") == "upper":
+        vals = np.where(np.tril(np.ones_like(vals), -1) > 0, np.nan, vals)
+    fig, ax, theme = _figure(params, aspect=1.0)
+    im = ax.imshow(vals, cmap="RdBu_r", vmin=-1, vmax=1)
+    ax.set_xticks(range(len(labs))); ax.set_xticklabels(labs, rotation=45, ha="right")
+    ax.set_yticks(range(len(labs))); ax.set_yticklabels(labs)
+    if params.get("show_values", True):
+        for i in range(len(labs)):
+            for j in range(len(labs)):
+                if not np.isnan(vals[i, j]):
+                    ax.text(j, i, f"{vals[i, j]:.2f}", ha="center", va="center",
+                            fontsize=plt.rcParams["font.size"] - 3,
+                            color="white" if abs(vals[i, j]) > 0.6 else theme["fg"])
+    fig.colorbar(im, ax=ax, shrink=0.7)
+    ax.xaxis.grid(False); ax.yaxis.grid(False)
+    return _save(fig, params, "corr_matrix")
+
+def residual_plots(result, params, data=None):
+    fitted = np.asarray(result.get("fitted", []), float)
+    resid = np.asarray(result.get("residuals", []), float)
+    if not len(fitted):
+        raise ValueError("No fitted values in this result.")
+    which = params.get("which") or ["resid_fitted", "qq"]
+    n = len(which)
+    fig, axes, theme = _figure(params, aspect=0.55, panels=n)
+    axes = axes if n > 1 else [axes]
+    from scipy import stats as st
+    for ax, w in zip(axes, which):
+        if w == "resid_fitted":
+            ax.scatter(fitted, resid, s=8, alpha=0.7, color=_colours(params, 1)[0],
+                       edgecolors="none")
+            ax.axhline(0, lw=0.7, ls="--", color=theme["fg"], alpha=0.6)
+            ax.set_xlabel("Fitted"); ax.set_ylabel("Residual")
+        elif w == "qq":
+            (osm, osr), (sl, ic, r) = st.probplot(resid, dist="norm")
+            ax.scatter(osm, osr, s=8, alpha=0.7, color=_colours(params, 1)[0],
+                       edgecolors="none")
+            ax.plot(osm, sl * osm + ic, lw=0.9, color=theme["fg"])
+            ax.set_xlabel("Theoretical quantiles"); ax.set_ylabel("Residual")
+        elif w == "scale_location":
+            s = np.sqrt(np.abs(resid / (resid.std(ddof=1) or 1)))
+            ax.scatter(fitted, s, s=8, alpha=0.7, color=_colours(params, 1)[0],
+                       edgecolors="none")
+            ax.set_xlabel("Fitted"); ax.set_ylabel("√|standardised residual|")
+        else:
+            ax.scatter(np.arange(len(resid)), resid, s=8, alpha=0.7,
+                       color=_colours(params, 1)[0], edgecolors="none")
+            ax.set_xlabel("Observation"); ax.set_ylabel("Residual")
+    fig.tight_layout()
+    return _save(fig, params, "residual_plots")
+
+def prisma(result, params, data=None):
+    """Boxes and arrows drawn directly, so the counts always match the database."""
+    c = result.get("counts", {})
+    fig, ax, theme = _figure(params, aspect=1.25)
+    ax.axis("off")
+    boxes = [
+        (0.5, 0.94, f"Records identified\nDatabases: {c.get('identified_db', 0)}\n"
+                    f"Registers: {c.get('identified_reg', 0)}"),
+        (0.5, 0.76, f"Records after duplicates removed\nn = {c.get('after_dedup', 0)}"),
+        (0.5, 0.58, f"Records screened\nn = {c.get('screened', 0)}"),
+        (0.5, 0.38, f"Full texts assessed\nn = {c.get('fulltext', 0)}"),
+        (0.5, 0.16, f"Studies included\nn = {c.get('included', 0)}"),
+    ]
+    excl = [
+        (0.88, 0.58, f"Excluded\nn = {c.get('excluded_ta', 0)}"),
+        (0.88, 0.38, f"Excluded\nn = {c.get('excluded_ft', 0)}"),
+    ]
+    for x, y, t in boxes:
+        ax.text(x, y, t, ha="center", va="center", fontsize=plt.rcParams["font.size"] - 1,
+                bbox=dict(boxstyle="round,pad=0.5", fc="none", ec=theme["fg"], lw=0.8))
+    for x, y, t in excl:
+        ax.text(x, y, t, ha="center", va="center", fontsize=plt.rcParams["font.size"] - 2,
+                bbox=dict(boxstyle="round,pad=0.4", fc="none", ec=theme["fg"], lw=0.6))
+    for i in range(len(boxes) - 1):
+        ax.annotate("", xy=(0.5, boxes[i + 1][1] + 0.05), xytext=(0.5, boxes[i][1] - 0.05),
+                    arrowprops=dict(arrowstyle="->", lw=0.8, color=theme["fg"]))
+    for y in (0.58, 0.38):
+        ax.annotate("", xy=(0.78, y), xytext=(0.58, y),
+                    arrowprops=dict(arrowstyle="->", lw=0.7, color=theme["fg"]))
+    ax.set_xlim(0, 1.1); ax.set_ylim(0, 1)
+    return _save(fig, params, "prisma")
+
+def rob_traffic(result, params, data=None):
+    rows = result.get("rows") or []
+    domains = result.get("domains") or []
+    if not rows:
+        raise ValueError("No risk-of-bias judgements recorded yet.")
+    colour = {"low": "#3ad29f", "some": "#f2b134", "moderate": "#f2b134",
+              "serious": "#ff4d5e", "high": "#ff4d5e", "critical": "#b3122b",
+              "unclear": "#8a919c", "0": "#ff4d5e", "1": "#3ad29f", "2": "#3ad29f"}
+    fig, ax, theme = _figure(params, aspect=max(0.4, 0.07 * len(rows) + 0.3))
+    for i, r in enumerate(rows):
+        for j, dmn in enumerate(domains):
+            v = str(r["judgements"].get(dmn, "unclear")).lower()
+            ax.scatter(j, len(rows) - i - 1, s=90, color=colour.get(v, "#8a919c"),
+                       edgecolors=theme["fg"], linewidths=0.5, zorder=3)
+    ax.set_xticks(range(len(domains)))
+    ax.set_xticklabels(domains, rotation=45, ha="right",
+                       fontsize=plt.rcParams["font.size"] - 2)
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels([r["study"] for r in rows][::-1],
+                       fontsize=plt.rcParams["font.size"] - 2)
+    ax.xaxis.grid(False); ax.yaxis.grid(False)
+    ax.set_xlim(-0.6, len(domains) - 0.4)
+    return _save(fig, params, "rob_traffic")
+
+RENDERERS = {
+    "bar_sig": bar_sig, "box": box, "raincloud": raincloud,
+    "means_ci": means_ci,
+    "hist": hist, "qq": qq, "missing_map": missing_map,
+    "scatter_fit": scatter_fit, "corr_matrix": corr_matrix,
+    "residual_plots": residual_plots, "coef_forest": coef_forest,
+    "bland_altman": bland_altman,
+    "km_curve": km_curve, "roc": roc, "forest": forest, "funnel": funnel,
+    "forest_effect": forest_effect, "stacked_bar": stacked_bar,
+    "standard_curve": standard_curve, "plate_heatmap": plate_heatmap, "ct_qc": ct_qc,
+    "scree": scree, "embedding": embedding,
+    "prisma": prisma, "rob_traffic": rob_traffic, "power_curve": power_curve,
+    "null_distribution": null_distribution, "bootstrap_dist": bootstrap_dist,
+    "pvalue_hist": pvalue_hist, "tost_plot": tost_plot,
+}
+
+def render(plot_id, result, params, data=None):
+    entry = REGISTRY.get(plot_id)
+    if not entry:
+        raise ValueError(f"Unknown plot {plot_id!r}.")
+    fn = RENDERERS.get(plot_id)
+    if fn is None:
+        raise NotImplementedError(
+            f"{entry['label']} is declared but not drawn yet.\n"
+            f"Add to labdesk/plots_run.py: def {plot_id}(result, params, data) -> path")
+    merged = {p["id"]: p.get("default") for p in entry["params"]}
+    from .plots_registry import COMMON
+    for p in COMMON:
+        merged.setdefault(p["id"], p.get("default"))
+    merged.update({k: v for k, v in (params or {}).items() if v is not None})
+    path = fn(result, merged, data)
+    db.insert("figure", {"project_id": result.get("project_id"),
+                         "run_id": result.get("run_id"), "plot_id": plot_id,
+                         "spec": merged, "path": path, "created_at": time.time()})
+    return path
