@@ -1,8 +1,12 @@
 """
 Figure rendering.
 
-The heart of this module is `layout_brackets`: significance brackets are
-stacked so they never collide or overlap the data.
+The part worth reading is `layout_brackets`. Significance brackets are the
+thing every plotting library does badly: they collide, they overlap the data,
+and nested comparisons end up on top of each other. The algorithm here sorts
+comparisons by span, then assigns each one the lowest free level whose
+horizontal extent does not already contain a bracket, so wide comparisons
+stack above narrow ones and nothing ever overlaps.
 """
 
 import io
@@ -19,7 +23,6 @@ from . import db
 from .config import FIG_DIR, get
 from .plots_registry import JOURNAL_PRESETS, REGISTRY
 from .stats_run import fmt_p, stars
-
 
 MM = 1 / 25.4
 
@@ -38,11 +41,13 @@ THEMES = {
     "dark": {"face": "#12141a", "fg": "#e2e6eb", "grid": "#2a2f39", "font": 8},
 }
 
+
 def _preset(name):
     for pid, _label, cfg in JOURNAL_PRESETS:
         if pid == name:
             return cfg
     return {"width_mm": 89, "dpi": 300}
+
 
 def _figure(params, aspect=0.75, panels=1):
     cfg = _preset(params.get("preset", "single_89"))
@@ -85,9 +90,11 @@ def _figure(params, aspect=0.75, panels=1):
         a.set_axisbelow(True)
     return fig, (axes if panels > 1 else axes[0]), theme
 
+
 def _colours(params, n):
     pal = PALETTE_DEFS.get(params.get("palette", "okabe_ito"), PALETTE_DEFS["okabe_ito"])
     return [pal[i % len(pal)] for i in range(n)]
+
 
 def _save(fig, params, name):
     fmt = params.get("format", "png")
@@ -97,6 +104,7 @@ def _save(fig, params, name):
                 facecolor=fig.get_facecolor(), transparent=False)
     plt.close(fig)
     return path
+
 
 # ─────────────────────────────────────────────────────────────────────────
 #  Significance bracket layout
@@ -155,6 +163,7 @@ def layout_brackets(comparisons, positions, heights, only_significant=True,
         it["floor"] = max(under) if under else 0
     return items
 
+
 def draw_brackets(ax, items, params, ymax_data):
     if not items:
         return ymax_data
@@ -184,6 +193,7 @@ def draw_brackets(ax, items, params, ymax_data):
     ax.set_ylim(ax.get_ylim()[0], top * 1.05)
     return top
 
+
 # ─────────────────────────────────────────────────────────────────────────
 #  Renderers
 # ─────────────────────────────────────────────────────────────────────────
@@ -205,6 +215,7 @@ def _series(result):
         kind = "mean"
     return labels, centre, kind
 
+
 def _err(result, params, n_groups):
     mode = params.get("error", get("error_bar_default", "ci95"))
     if mode == "none":
@@ -225,6 +236,7 @@ def _err(result, params, n_groups):
     if sem:
         return list(sem), "SEM"
     return None, ""
+
 
 def bar_sig(result, params, data=None):
     labels, centre, ckind = _series(result)
@@ -279,6 +291,7 @@ def bar_sig(result, params, data=None):
                 color=theme["fg"], alpha=0.75)
     return _save(fig, params, "bar_sig")
 
+
 def box(result, params, data=None):
     labels, centre, _ = _series(result)
     fig, ax, theme = _figure(params)
@@ -320,6 +333,7 @@ def box(result, params, data=None):
     draw_brackets(ax, items, params, max(heights.values()) if heights else 1)
     return _save(fig, params, "box")
 
+
 def raincloud(result, params, data=None):
     labels, _, _ = _series(result)
     arrays = [np.asarray(data.get(l, [])) for l in labels] if data else []
@@ -355,6 +369,7 @@ def raincloud(result, params, data=None):
     draw_brackets(ax, items, params, max(heights.values()) if heights else 1)
     return _save(fig, params, "raincloud")
 
+
 def means_ci(result, params, data=None):
     labels, centre, _ = _series(result)
     err, err_label = _err(result, params, len(labels))
@@ -370,6 +385,7 @@ def means_ci(result, params, data=None):
     ax.text(1.0, -0.16, f"Error bars: {err_label}", transform=ax.transAxes,
             ha="right", va="top", fontsize=plt.rcParams["font.size"] - 2, alpha=0.75)
     return _save(fig, params, "means_ci")
+
 
 def forest(result, params, data=None):
     studies = result.get("studies") or []
@@ -431,6 +447,7 @@ def forest(result, params, data=None):
                 va="top", alpha=0.85)
     return _save(fig, params, "forest")
 
+
 def funnel(result, params, data=None):
     pts = result.get("points")
     if not pts and result.get("studies"):
@@ -457,6 +474,7 @@ def funnel(result, params, data=None):
     ax.set_xlabel(params.get("xlabel") or "Effect size")
     ax.set_ylabel("Standard error")
     return _save(fig, params, "funnel")
+
 
 def km_curve(result, params, data=None):
     curves = result.get("curves") or []
@@ -503,6 +521,7 @@ def km_curve(result, params, data=None):
                 va="top", fontsize=plt.rcParams["font.size"] - 2, weight="bold")
     return _save(fig, params, "km_curve")
 
+
 def roc(result, params, data=None):
     fig, ax, theme = _figure(params, aspect=0.95)
     curve = result.get("curve") or []
@@ -530,6 +549,7 @@ def roc(result, params, data=None):
     ax.set_ylabel(params.get("ylabel") or "Sensitivity")
     ax.set_aspect("equal")
     return _save(fig, params, "roc")
+
 
 def scatter_fit(result, params, data=None):
     if not data or "x" not in data:
@@ -564,6 +584,7 @@ def scatter_fit(result, params, data=None):
     ax.set_ylabel(params.get("ylabel") or data.get("ylabel", "y"))
     return _save(fig, params, "scatter_fit")
 
+
 def bland_altman(result, params, data=None):
     m = np.asarray(result["means"], float)
     d = np.asarray(result["diffs"], float)
@@ -582,6 +603,7 @@ def bland_altman(result, params, data=None):
     ax.text(0.02, 0.03, f"Bias {result['bias']:.3g}, SD {result['sd_diff']:.3g}",
             transform=ax.transAxes, fontsize=plt.rcParams["font.size"] - 2)
     return _save(fig, params, "bland_altman")
+
 
 def standard_curve(result, params, data=None):
     fig, ax, theme = _figure(params, aspect=0.8)
@@ -605,6 +627,7 @@ def standard_curve(result, params, data=None):
     ax.set_ylabel(params.get("ylabel") or "Optical density")
     return _save(fig, params, "standard_curve")
 
+
 def power_curve(result, params, data=None):
     fig, ax, theme = _figure(params, aspect=0.72)
     pts = result.get("curve") or []
@@ -622,6 +645,7 @@ def power_curve(result, params, data=None):
     ax.set_ylabel("Power")
     return _save(fig, params, "power_curve")
 
+
 def qq(result, params, data=None):
     from scipy import stats as st
     vals = np.asarray(data.get("values", []), float)
@@ -637,6 +661,7 @@ def qq(result, params, data=None):
     ax.text(0.03, 0.95, f"R = {r:.3f}", transform=ax.transAxes, va="top",
             fontsize=plt.rcParams["font.size"] - 1)
     return _save(fig, params, "qq")
+
 
 def hist(result, params, data=None):
     vals = np.asarray(data.get("values", []), float)
@@ -656,6 +681,7 @@ def hist(result, params, data=None):
     ax.set_ylabel(params.get("ylabel") or ("Density" if params.get("density", True) else "Count"))
     return _save(fig, params, "hist")
 
+
 def pvalue_hist(result, params, data=None):
     ps = [r["p_raw"] for r in result.get("rows", [])]
     fig, ax, theme = _figure(params, aspect=0.7)
@@ -666,6 +692,7 @@ def pvalue_hist(result, params, data=None):
     ax.set_xlabel("p value")
     ax.set_ylabel("Count")
     return _save(fig, params, "pvalue_hist")
+
 
 def coef_forest(result, params, data=None):
     coefs = result.get("coefficients") or []
@@ -696,6 +723,7 @@ def coef_forest(result, params, data=None):
     ax.tick_params(axis="y", length=0)
     return _save(fig, params, "coef_forest")
 
+
 def embedding(result, params, data=None):
     pts = result.get("points") or []
     fig, ax, theme = _figure(params, aspect=0.85)
@@ -717,7 +745,9 @@ def embedding(result, params, data=None):
     ax.set_ylabel(params.get("ylabel") or al[1])
     return _save(fig, params, "embedding")
 
+
 pca_biplot = embedding
+
 
 def scree(result, params, data=None):
     exp = result.get("explained") or []
@@ -732,6 +762,7 @@ def scree(result, params, data=None):
     ax.set_xlabel("Component"); ax.set_ylabel("Variance explained (%)")
     ax.set_xticks(x)
     return _save(fig, params, "scree")
+
 
 def tost_plot(result, params, data=None):
     fig, ax, theme = _figure(params, aspect=0.45)
@@ -750,6 +781,7 @@ def tost_plot(result, params, data=None):
     ax.spines["left"].set_visible(False)
     return _save(fig, params, "tost_plot")
 
+
 def null_distribution(result, params, data=None):
     vals = result.get("null_sample") or result.get("boot_sample") or []
     fig, ax, theme = _figure(params, aspect=0.6)
@@ -760,6 +792,7 @@ def null_distribution(result, params, data=None):
     ax.set_xlabel("Statistic under the null")
     ax.set_ylabel("Count")
     return _save(fig, params, "null_distribution")
+
 
 def bootstrap_dist(result, params, data=None):
     vals = result.get("boot_sample") or []
@@ -776,6 +809,7 @@ def bootstrap_dist(result, params, data=None):
     ax.set_xlabel("Bootstrap statistic")
     ax.set_ylabel("Count")
     return _save(fig, params, "bootstrap_dist")
+
 
 def stacked_bar(result, params, data=None):
     counts = np.array(result.get("counts") or [], float)
@@ -817,6 +851,7 @@ def stacked_bar(result, params, data=None):
     ax.legend(frameon=False, fontsize=plt.rcParams["font.size"] - 2)
     return _save(fig, params, "stacked_bar")
 
+
 def forest_effect(result, params, data=None):
     items = []
     for m in result.get("metrics", []):
@@ -846,6 +881,7 @@ def forest_effect(result, params, data=None):
     ax.tick_params(axis="y", length=0)
     return _save(fig, params, "forest_effect")
 
+
 def missing_map(result, params, data=None):
     cols = result.get("columns") or []
     per = {r["column"]: r["pct"] for r in result.get("per_column", [])}
@@ -857,6 +893,7 @@ def missing_map(result, params, data=None):
     ax.set_xlabel("Missing (%)")
     ax.invert_yaxis()
     return _save(fig, params, "missing_map")
+
 
 def plate_heatmap(result, params, data=None):
     unknowns = result.get("unknowns") or []
@@ -890,6 +927,7 @@ def plate_heatmap(result, params, data=None):
     ax.yaxis.grid(False); ax.xaxis.grid(False)
     return _save(fig, params, "plate_heatmap")
 
+
 def ct_qc(result, params, data=None):
     flags = result.get("qc_flags") or []
     fig, ax, theme = _figure(params, aspect=0.6)
@@ -901,6 +939,7 @@ def ct_qc(result, params, data=None):
     ax.set_xlabel("Replicate SD (Ct)")
     ax.invert_yaxis()
     return _save(fig, params, "ct_qc")
+
 
 def corr_matrix(result, params, data=None):
     m = result.get("matrix")
@@ -926,6 +965,7 @@ def corr_matrix(result, params, data=None):
     fig.colorbar(im, ax=ax, shrink=0.7)
     ax.xaxis.grid(False); ax.yaxis.grid(False)
     return _save(fig, params, "corr_matrix")
+
 
 def residual_plots(result, params, data=None):
     fitted = np.asarray(result.get("fitted", []), float)
@@ -961,6 +1001,7 @@ def residual_plots(result, params, data=None):
     fig.tight_layout()
     return _save(fig, params, "residual_plots")
 
+
 def prisma(result, params, data=None):
     """Boxes and arrows drawn directly, so the counts always match the database."""
     c = result.get("counts", {})
@@ -993,6 +1034,7 @@ def prisma(result, params, data=None):
     ax.set_xlim(0, 1.1); ax.set_ylim(0, 1)
     return _save(fig, params, "prisma")
 
+
 def rob_traffic(result, params, data=None):
     rows = result.get("rows") or []
     domains = result.get("domains") or []
@@ -1017,6 +1059,7 @@ def rob_traffic(result, params, data=None):
     ax.set_xlim(-0.6, len(domains) - 0.4)
     return _save(fig, params, "rob_traffic")
 
+
 RENDERERS = {
     "bar_sig": bar_sig, "box": box, "raincloud": raincloud,
     "means_ci": means_ci,
@@ -1032,6 +1075,7 @@ RENDERERS = {
     "null_distribution": null_distribution, "bootstrap_dist": bootstrap_dist,
     "pvalue_hist": pvalue_hist, "tost_plot": tost_plot,
 }
+
 
 def render(plot_id, result, params, data=None):
     entry = REGISTRY.get(plot_id)
