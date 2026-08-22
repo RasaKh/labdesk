@@ -1,8 +1,16 @@
 """
 Reporting.
 
-Results sentences, a methods paragraph assembled from the provenance
-ledger, reporting checklists, and a reproducible bundle.
+Three things come out of here:
+
+  Results sentences, formatted correctly and consistently. Reviewers notice
+  when F(2,57) is written three different ways in one paper.
+
+  A methods paragraph assembled from the provenance ledger, so it describes
+  what was actually run, including the corrections and the software versions.
+
+  Reporting checklists, and a reproducible bundle containing the data hash,
+  the specs, the results, the figures and generated scripts.
 """
 
 import json
@@ -14,7 +22,6 @@ from . import db
 from .config import EXPORT_DIR, get
 from .stats_run import fmt_n, fmt_p, versions
 
-
 # ─────────────────────────────────────────────────────────────────────────
 #  Results sentences
 # ─────────────────────────────────────────────────────────────────────────
@@ -24,6 +31,7 @@ def _p_text(p, style):
         return ""
     t = fmt_p(p, style)
     return t if style == "apa" else t.replace("p", "P")
+
 
 def sentence(result, style=None):
     style = style or get("stats_report_style", "apa")
@@ -165,6 +173,7 @@ def sentence(result, style=None):
 
     return result.get("sentence", "")
 
+
 # ─────────────────────────────────────────────────────────────────────────
 #  Methods paragraph
 # ─────────────────────────────────────────────────────────────────────────
@@ -192,6 +201,7 @@ TEST_METHOD_NAMES = {
     "qpcr": "relative quantification of gene expression",
     "elisa": "ELISA standard-curve fitting",
 }
+
 
 def methods_paragraph(dataset_sha=None, limit=200, project_id=None):
     sql = "SELECT * FROM analysis_run WHERE status='ok' AND project_id IS ?"
@@ -294,6 +304,7 @@ def methods_paragraph(dataset_sha=None, limit=200, project_id=None):
             "software": software, "versions": v,
             "note": "Generated from the run ledger, so it describes what was actually "
                     "executed. Read it before pasting it; it is a draft, not a fact."}
+
 
 # ─────────────────────────────────────────────────────────────────────────
 #  Reporting checklists
@@ -460,12 +471,14 @@ CHECKLISTS = {
     ]},
 }
 
+
 def checklist(kind):
     c = CHECKLISTS.get(kind)
     if not c:
         raise ValueError(f"No checklist named {kind!r}.")
     return {"id": kind, "label": c["label"],
             "items": [{"n": i + 1, "text": t} for i, t in enumerate(c["items"])]}
+
 
 # ─────────────────────────────────────────────────────────────────────────
 #  Reproducibility bundle
@@ -549,6 +562,7 @@ def bundle(dataset_id=None, include_data=True, project_id=None):
 
     return {"path": path, "n_runs": len(runs),
             "size_kb": round(os.path.getsize(path) / 1024, 1)}
+
 
 def prereg_draft(question="", outcomes="", hypotheses=""):
     """A pre-registration skeleton in the OSF style."""
