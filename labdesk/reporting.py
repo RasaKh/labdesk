@@ -6,8 +6,12 @@ ledger, reporting checklists, and a reproducible bundle.
 """
 
 import json
+import os
+import time
+import zipfile
 
-from .config import get
+from . import db
+from .config import EXPORT_DIR, get
 from .stats_run import fmt_n, fmt_p, versions
 
 
@@ -462,3 +466,125 @@ def checklist(kind):
         raise ValueError(f"No checklist named {kind!r}.")
     return {"id": kind, "label": c["label"],
             "items": [{"n": i + 1, "text": t} for i, t in enumerate(c["items"])]}
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Reproducibility bundle
+# ─────────────────────────────────────────────────────────────────────────
+
+def bundle(dataset_id=None, include_data=True, project_id=None):
+    from . import datasets
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(EXPORT_DIR, f"labdesk_bundle_{ts}.zip")
+    m = datasets.meta(dataset_id) if dataset_id else None
+    if m and project_id is None:
+        project_id = m.get("project_id")
+    if m and m.get("project_id") != project_id:
+        raise ValueError("That dataset does not belong to the requested project.")
+    sql = "SELECT * FROM analysis_run WHERE status='ok' AND project_id IS ?"
+    args = (project_id,)
+    if m:
+        sql += " AND dataset_id=?"
+        args += (dataset_id,)
+    runs = db.query(sql + " ORDER BY created_at ASC", args)
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        manifest = {
+            "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "dataset": {"name": m["name"], "sha256": m["sha256"],
+                        "n_rows": m["n_rows"], "n_cols": m["n_cols"]} if m else None,
+            "project_id": project_id,
+            "n_runs": len(runs),
+            "seeds": sorted({r.get("seed") for r in runs if r.get("seed") is not None}),
+            "alphas": sorted({r.get("alpha") for r in runs if r.get("alpha") is not None}),
+            "versions": [json.loads(r.get("versions") or "{}") for r in runs],
+        }
+        z.writestr("manifest.json", json.dumps(manifest, indent=2))
+        z.writestr("README.txt",
+                   "LabDesk reproducibility bundle\n\n"
+                   "The JSON files under runs/ are the canonical ledger records: executed method, "
+                   "parameters, assumptions and result. reproduce.py and reproduce.R contain emitted "
+                   "analysis snippets; not every statistical family can yet be represented as a fully "
+                   "standalone script, so verify each snippet against its run JSON before execution.\n")
+        z.writestr("methods.txt", methods_paragraph(m["sha256"] if m else None,
+                                                   project_id=project_id)["text"])
+
+        py_lines = ["# Analysis snippets emitted for the runs in this bundle.",
+                    "# The run JSON files are the canonical provenance record; snippets may require",
+                    "# the role variables named in each spec to be prepared from data.csv first.",
+                    "import pandas as pd", "from scipy import stats",
+                    "df = pd.read_csv('data.csv')", ""]
+        r_lines = ["# R analysis snippets emitted for the runs in this bundle.",
+                   "# See runs/*.json for the canonical executed specifications.",
+                   "d <- read.csv('data.csv')", ""]
+        for i, r in enumerate(runs, 1):
+            spec = json.loads(r["spec"] or "{}")
+            res = json.loads(r["result"] or "{}")
+            z.writestr(f"runs/{i:03d}_{r['test_id']}.json",
+                       json.dumps({"spec": spec, "result": res,
+                                   "assumptions": json.loads(r["assumptions"] or "[]"),
+                                   "created_at": r["created_at"]}, indent=2, default=str))
+            py_lines += [f"# [{i}] {r['test_id']}", r["code_python"] or "", ""]
+            r_lines += [f"# [{i}] {r['test_id']}", r["code_r"] or "", ""]
+        z.writestr("reproduce.py", "\n".join(py_lines))
+        z.writestr("reproduce.R", "\n".join(r_lines))
+
+        run_ids = [r["id"] for r in runs]
+        figs = []
+        if run_ids:
+            marks = ",".join("?" for _ in run_ids)
+            figs = db.query(f"SELECT * FROM figure WHERE project_id IS ? AND run_id IN ({marks}) "
+                            "ORDER BY created_at DESC LIMIT 200", (project_id, *run_ids))
+        for f in figs:
+            if f["path"] and os.path.exists(f["path"]):
+                z.write(f["path"], f"figures/{os.path.basename(f['path'])}")
+
+        if include_data and m and os.path.exists(m["path"]):
+            try:
+                datasets.load(dataset_id).to_csv(
+                    os.path.join(EXPORT_DIR, "_tmp_data.csv"), index=False)
+                z.write(os.path.join(EXPORT_DIR, "_tmp_data.csv"), "data.csv")
+                os.remove(os.path.join(EXPORT_DIR, "_tmp_data.csv"))
+            except Exception:
+                pass
+
+    return {"path": path, "n_runs": len(runs),
+            "size_kb": round(os.path.getsize(path) / 1024, 1)}
+
+def prereg_draft(question="", outcomes="", hypotheses=""):
+    """A pre-registration skeleton in the OSF style."""
+    return {"text": f"""Title
+
+Research question
+{question or '[State the question in PICO form.]'}
+
+Hypotheses
+{hypotheses or '[State each hypothesis and its direction. Anything not listed here is exploratory.]'}
+
+Design
+[Design, allocation, blinding, and the unit of analysis.]
+
+Sampling plan
+[Target sample size, the calculation that produced it, and the stopping rule.
+If data collection has already begun, say so and say how much.]
+
+Variables
+Primary outcome: {outcomes or '[one outcome]'}
+Secondary outcomes: [list]
+Covariates: [list]
+
+Analysis plan
+Primary analysis: [test, with the exact model specification]
+Assumption checks and what happens if they fail: [pre-specify the fallback]
+Multiple comparisons: correction across [family], using [method]
+Missing data: [approach]
+Outliers: [rule, decided now, not later]
+Inference criteria: alpha = {get('alpha', 0.05)}, two-sided
+
+Exploratory analyses
+[Anything not listed above is exploratory and will be labelled as such.]
+
+Data and code availability
+[Where the data, the analysis code and the materials will be deposited.]""",
+            "note": "Pre-registration is worth more than any statistical correction. "
+                    "The fallback for a failed assumption is the field people forget, "
+                    "and it is the one that stops a p-hack from looking principled."}
