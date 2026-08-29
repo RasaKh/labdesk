@@ -1,0 +1,130 @@
+
+/* ═══ Daylight, the default. Built from the site palette. ═══════════ */
+:root{
+  --void:#e9eaec;      /* page ground */
+  --rack:#ffffff;      /* panels */
+  --rail:#f4f5f6;      /* panel heads, striped rows */
+  --raise:#ffffff;
+  --seam:#c7cbd1; --seam-hi:#9aa0a8;
+  --ink:#1c1e21; --ink-dim:#565b62; --dim:#6f757d;
+
+  --topbar-bg:#1f3a5c; --topbar-ink:#ffffff; --topbar-dim:#dbe4ee;
+  --topbar-accent:#8fb4e8; --topbar-rule:3px solid var(--ink);
+  --field-bg:#ffffff;
+  --on-accent:#ffffff;
+  --term-bg:#f4f5f6;
+
+  /* Stains, darkened for a white field. Same hues, lower values. */
+  --haem:#3f4bbf; --eosin:#c02d63;
+  --methylene:#26618f; --fastgreen:#217a61; --safranin:#b8492a;
+  --crystal:#6b3fbf; --congo:#8a3b34; --iodine:#8a6410;
+  --pas:#a02a8a; --trypan:#38499c; --silver:#565b62;
+  /* Warm incandescent lamp-orange, the colour of light through an old
+     microscope condenser. Its own stain, deliberately not --warn: iodine
+     already carries caution duty and has to stay muted enough not to read as
+     an error everywhere it appears. This one gets to be loud. */
+  --lamp:#c94a12;
+
+  --haem-wash:rgba(63,75,191,.09);   --eosin-wash:rgba(192,45,99,.09);
+  --methylene-wash:rgba(38,97,143,.09); --fastgreen-wash:rgba(33,122,97,.09);
+  --safranin-wash:rgba(184,73,42,.09); --crystal-wash:rgba(107,63,191,.09);
+  --congo-wash:rgba(138,59,52,.09);   --iodine-wash:rgba(138,100,16,.10);
+  --pas-wash:rgba(160,42,138,.09);    --trypan-wash:rgba(56,73,156,.09);
+  --silver-wash:rgba(86,91,98,.08);   --lamp-wash:rgba(201,74,18,.10);
+  --haem-edge:rgba(63,75,191,.32);    --eosin-edge:rgba(192,45,99,.32);
+  --lamp-edge:rgba(201,74,18,.35);
+  --row-hover:rgba(63,75,191,.055);
+
+  /* A louder tier of each stain, for small coloured text specifically.
+     The base tones above are tuned for washes and hairline borders; at
+       .6-.7rem uppercase text they read as grey. These do not. */
+  --haem-text:#3140c9; --eosin-text:#b8175a;
+  --methylene-text:#1c5686; --fastgreen-text:#0f6e54; --safranin-text:#a83c1f;
+  --crystal-text:#6230c4; --congo-text:#96271e; --iodine-text:#7a5300;
+  --pas-text:#95137e; --trypan-text:#2c3e9c; --silver-text:#454a52;
+  --lamp-text:#a83c0d;
+
+
+  --signal:#217a61; --warn:#8a6410; --fault:#8a3b34; --info:#26618f;
+  --signal-wash:var(--fastgreen-wash); --warn-wash:var(--iodine-wash);
+  --fault-wash:var(--congo-wash); --info-wash:var(--methylene-wash);
+  --signal-edge:rgba(33,122,97,.3); --warn-edge:rgba(138,100,16,.32);
+  --fault-edge:rgba(138,59,52,.32); --info-edge:rgba(38,97,143,.3);
+
+  /* The site is flat: square corners, no gradients, no motion to speak of. */
+  --r:0px;
+  /* Buttons keep a soft corner in both themes. --r goes to 0 in daylight to
+     match the site's flat panels and rules, but a perfectly square button
+     reads as broken rather than institutional, so this stays fixed. */
+  --btn-r:4px;
+  --shadow:0 2px 8px rgba(28,30,33,.12);
+  --shadow-lg:0 6px 22px rgba(28,30,33,.16);
+
+  --t:120ms cubic-bezier(.4,0,.2,1);
+  /* Both rails the same width. The right one holds the job list and nothing
+     else now, so the extra 7.5rem it used to carry was dead space. */
+  --rail-w:13.5rem; --insp-w:13.5rem;
+}
+
+/* ═══ Bench, the dark theme. ════════════════════════════════════════ */
+[data-theme="bench"]{
+  --void:#0b0c0e; --rack:#121418; --rail:#171a1f; --raise:#1d2128;
+  --seam:#272c34; --seam-hi:#343a44;
+  --ink:#dfe3e8; --ink-dim:#98a1ad; --dim:#6d7682;
+
+  --topbar-bg:var(--rack); --topbar-ink:var(--ink); --topbar-dim:var(--dim);
+  --topbar-accent:var(--haem); --topbar-rule:1px solid var(--seam);
+  --field-bg:var(--void);
+  --on-accent:#0b0c0e;
+  --term-bg:#08090b;
+
+  --haem:#6f7df2; --eosin:#f2568f;
+  --methylene:#5aa9f8; --fastgreen:#35d6b0; --safranin:#ff7d4d;
+  --crystal:#a97cf5; --congo:#ff5f6d; --iodine:#f5a623;
+  --pas:#e05bc8; --trypan:#5c74e8; --silver:#9aa3af;
+  --lamp:#ff6b35;   /* TubeForge's tally orange, unchanged */
+
+  --haem-wash:rgba(111,125,242,.16); --eosin-wash:rgba(242,86,143,.16);
+  --methylene-wash:rgba(90,169,248,.16); --fastgreen-wash:rgba(53,214,176,.16);
+  --safranin-wash:rgba(255,125,77,.16); --crystal-wash:rgba(169,124,245,.16);
+  --congo-wash:rgba(255,95,109,.16); --iodine-wash:rgba(245,166,35,.16);
+  --pas-wash:rgba(224,91,200,.16);   --trypan-wash:rgba(92,116,232,.16);
+  --silver-wash:rgba(154,163,175,.14); --lamp-wash:rgba(255,107,53,.16);
+  --haem-edge:rgba(111,125,242,.3);  --eosin-edge:rgba(242,86,143,.3);
+  --lamp-edge:rgba(255,107,53,.35);
+  --row-hover:rgba(111,125,242,.055);
+
+  /* Bench stains already carry enough saturation at small sizes, so the
+     "loud" tier is the same colour; the variable exists so nothing has to
+     branch on theme. */
+  --haem-text:var(--haem); --eosin-text:var(--eosin);
+  --methylene-text:var(--methylene); --fastgreen-text:var(--fastgreen);
+  --safranin-text:var(--safranin); --crystal-text:var(--crystal);
+  --congo-text:var(--congo); --iodine-text:var(--iodine);
+  --pas-text:var(--pas); --trypan-text:var(--trypan); --silver-text:var(--ink-dim);
+  --lamp-text:var(--lamp);
+  --warn-text:var(--warn); --fault-text:var(--fault);
+
+
+  --signal:#35d6b0; --warn:#f5a623; --fault:#ff4d5e; --info:#5aa9f8;
+  --signal-wash:rgba(53,214,176,.07); --warn-wash:rgba(245,166,35,.07);
+  --fault-wash:rgba(255,77,94,.08);   --info-wash:rgba(90,169,248,.07);
+  --signal-edge:rgba(53,214,176,.25); --warn-edge:rgba(245,166,35,.25);
+  --fault-edge:rgba(255,77,94,.3);    --info-edge:rgba(90,169,248,.25);
+
+  --r:4px;
+  --shadow:0 2px 10px rgba(0,0,0,.4);
+  --shadow-lg:0 14px 36px rgba(0,0,0,.55);
+}
+
+/* ═══ Typefaces ═════════════════════════════════════════════════════ */
+:root{
+  --serif:Georgia,"Times New Roman",Times,serif;
+  --sans:Arial,Helvetica,sans-serif;
+  --display:var(--serif);
+}
+[data-type="instrument"]{
+  --serif:ui-sans-serif,"Inter","Segoe UI",system-ui,sans-serif;
+  --sans:ui-sans-serif,"Inter","Segoe UI",system-ui,-apple-system,"Helvetica Neue",sans-serif;
+  --display:var(--sans);
+}
