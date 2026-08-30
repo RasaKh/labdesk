@@ -128,3 +128,137 @@
   --sans:ui-sans-serif,"Inter","Segoe UI",system-ui,-apple-system,"Helvetica Neue",sans-serif;
   --display:var(--sans);
 }
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:calc(16px * var(--fs,1.1))}
+body{
+  font-family:var(--sans); background:var(--void); color:var(--ink);
+  line-height:1.5; -webkit-font-smoothing:antialiased;
+  height:100vh; overflow:hidden;
+}
+::selection{background:var(--haem);color:var(--on-accent)}
+:focus-visible{outline:2px solid var(--haem);outline-offset:2px}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--seam);border-radius:var(--r);border:2px solid var(--void)}
+::-webkit-scrollbar-thumb:hover{background:var(--seam-hi)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ─── Shell ─────────────────────────────────────────────────────────── */
+#app{display:grid;grid-template-rows:2.9rem 1fr 1.8rem;height:100vh}
+#topbar{
+  display:flex;align-items:center;gap:13px;padding:0 14px;
+  background:var(--topbar-bg);border-bottom:var(--topbar-rule);
+}
+.wordmark{display:flex;align-items:center;gap:10px}
+.wordmark b{
+  font:700 1.16rem/1 var(--display);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--topbar-ink);
+}
+/* "Forge" needs its own hue rather than a faded copy of "Lab", or it reads as
+   a rendering glitch against a solid navy bar. Same idea in bench: the accent
+   colour, not a dimmed one. */
+.wordmark b em{font-style:normal;color:var(--topbar-accent)}
+.wordmark .ver{font:400 .62rem/1 var(--sans);color:var(--topbar-dim);letter-spacing:.08em}
+/* Sized to the cap height of the wordmark. A running job should be visible
+   from across the room, not a pinprick. */
+.tally-lamp{
+  width:14px;height:14px;border-radius:50%;background:rgba(255,255,255,.22);
+  box-shadow:0 0 0 1px rgba(0,0,0,.25) inset;flex:none;transition:background var(--t);
+}
+[data-theme="bench"] .tally-lamp{background:var(--seam-hi)}
+.tally-lamp.live{
+  background:#8fa8ff;
+  box-shadow:0 0 0 1px rgba(0,0,0,.25) inset, 0 0 10px #8fa8ff, 0 0 20px rgba(143,168,255,.5);
+  animation:pulse 1.6s ease-in-out infinite;
+}
+[data-theme="bench"] .tally-lamp.live{
+  background:var(--haem);
+  box-shadow:0 0 0 1px rgba(0,0,0,.4) inset, 0 0 10px var(--haem),
+             0 0 20px rgba(111,125,242,.45);
+}
+.tally-lamp.fault{background:#e88b83;box-shadow:0 0 0 1px rgba(0,0,0,.25) inset,0 0 10px #e88b83}
+[data-theme="bench"] .tally-lamp.fault{background:var(--fault);box-shadow:0 0 10px var(--fault)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.spacer{flex:1}
+
+
+.topbar-path{
+  font:600 .76rem/1 var(--sans);color:var(--topbar-dim);
+  padding:5px 9px;background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.18);
+  border-radius:var(--btn-r);max-width:34ch;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;cursor:pointer;transition:var(--t);
+}
+.topbar-path b{color:var(--topbar-ink);font-weight:700}
+.topbar-path:hover{border-color:rgba(255,255,255,.4);color:var(--topbar-ink)}
+[data-theme="bench"] .topbar-path{background:var(--void);border-color:var(--seam);color:var(--ink-dim)}
+[data-theme="bench"] .topbar-path:hover{border-color:var(--seam-hi);color:var(--ink)}
+.topbar-path.warn{border-color:#e8c07a;color:#f4d9a8}
+[data-theme="bench"] .topbar-path.warn{border-color:var(--warn-edge);color:var(--warn)}
+.topbar-path.eosin b{color:#ffe1ec}
+[data-theme="bench"] .topbar-path.eosin b{color:var(--eosin-text)}
+.topbar-btn{
+  font:700 .76rem/1 var(--sans);color:var(--topbar-dim);background:transparent;
+  border:1px solid rgba(255,255,255,.22);border-radius:var(--btn-r);padding:6px 10px;
+  cursor:pointer;transition:var(--t);white-space:nowrap;
+}
+.topbar-btn:hover{color:var(--topbar-ink);border-color:rgba(255,255,255,.45);
+                  background:rgba(255,255,255,.1)}
+.topbar-btn.on{background:var(--topbar-ink);color:var(--topbar-bg);
+               border-color:var(--topbar-ink)}
+[data-theme="bench"] .topbar-btn{border-color:var(--seam);color:var(--ink-dim)}
+[data-theme="bench"] .topbar-btn:hover{background:var(--rail);color:var(--ink);
+                                       border-color:var(--seam-hi)}
+[data-theme="bench"] .topbar-btn.on{background:var(--haem);color:var(--on-accent);
+                                    border-color:var(--haem)}
+kbd{
+  font:500 .62rem/1 var(--sans);background:var(--field-bg);border:1px solid var(--seam);
+  border-bottom-width:2px;border-radius:var(--btn-r);padding:2px 4px;color:var(--dim);
+}
+
+/* ─── Project switcher ──────────────────────────────────────────────── */
+/* Deliberately the widest thing in the topbar after the wordmark. Which
+   project is active determines what every pane shows, so getting it wrong
+   is expensive and it should be impossible to miss. */
+.project-switch{
+  display:flex;align-items:center;gap:7px;padding:5px 10px;
+  font:700 .78rem/1 var(--sans);color:var(--topbar-ink);
+  background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.28);
+  border-radius:var(--btn-r);cursor:pointer;transition:var(--t);
+  max-width:26ch;white-space:nowrap;
+}
+.project-switch:hover{background:rgba(255,255,255,.22);border-color:rgba(255,255,255,.5)}
+.project-switch #project-name{overflow:hidden;text-overflow:ellipsis}
+.project-caret{font-size:.7em;opacity:.7}
+.project-dot{width:7px;height:7px;border-radius:50%;background:currentColor;
+             flex:none;opacity:.85}
+[data-theme="bench"] .project-switch{background:var(--haem-wash);
+  border-color:var(--haem-edge);color:var(--ink)}
+[data-theme="bench"] .project-switch:hover{background:var(--rail);border-color:var(--haem)}
+.project-switch.none{opacity:.75;font-weight:400}
+
+/* Dropdown */
+#project-menu{
+  position:fixed;z-index:620;min-width:22rem;max-width:30rem;padding:6px;
+  background:var(--rack);border:1px solid var(--seam-hi);border-radius:var(--btn-r);
+  box-shadow:var(--shadow-lg);
+}
+#project-menu[hidden]{display:none}
+.pm-item{
+  display:block;width:100%;text-align:left;padding:8px 10px;border:0;
+  background:none;border-radius:var(--btn-r);cursor:pointer;transition:var(--t);
+  border-left:2px solid transparent;
+}
+.pm-item:hover{background:var(--rail)}
+.pm-item.on{background:var(--haem-wash);border-left-color:var(--haem)}
+.pm-item .pm-name{font:700 .82rem/1.3 var(--sans);color:var(--ink);
+                  display:flex;align-items:center;gap:7px}
+.pm-item .pm-meta{font:400 .68rem/1.4 var(--sans);color:var(--dim);margin-top:2px}
+.pm-bar{height:3px;background:var(--seam);border-radius:2px;margin-top:5px;overflow:hidden}
+.pm-bar span{display:block;height:100%;background:var(--haem)}
+.pm-sep{height:1px;background:var(--seam);margin:5px 2px}
+.pm-new{font:700 .76rem/1 var(--sans);color:var(--haem-text);padding:8px 10px;
+        width:100%;text-align:left;border:0;background:none;cursor:pointer;
+        border-radius:var(--btn-r)}
+.pm-new:hover{background:var(--haem-wash)}
