@@ -622,3 +622,168 @@ label .qmark{margin-left:5px;vertical-align:-1px}
 
 /* ─── Numeric readouts ──────────────────────────────────────────────── */
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:.76rem}
+.kv dt{font:700 .6rem/1.6 var(--sans);letter-spacing:.06em;text-transform:uppercase;
+       color:var(--dim)}
+.kv dd{font-family:var(--sans);font-size:.73rem;color:var(--ink);word-break:break-word}
+
+.hero{display:flex;gap:26px;flex-wrap:wrap;padding:4px 0 12px}
+.hero .item{min-width:82px}
+.hero .lab{font:600 .66rem/1.4 var(--sans);letter-spacing:.1em;text-transform:uppercase;
+           color:var(--dim)}
+.hero .val{font:700 1.42rem/1.25 var(--sans);font-variant-numeric:tabular-nums;
+           color:var(--ink)}
+.hero .val.sig{color:var(--eosin-text)}
+.hero .sub{font:400 .72rem/1.4 var(--sans);color:var(--dim)}
+
+/* ─── Tables ────────────────────────────────────────────────────────── */
+.tablewrap{max-height:460px;overflow:auto;border:1px solid var(--seam);
+           border-radius:var(--r);background:var(--rack)}
+table{width:100%;border-collapse:collapse;font-size:.75rem}
+th{
+  text-align:left;font:700 .68rem/1.5 var(--sans);letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink-dim);padding:7px 9px;white-space:nowrap;
+  border-bottom:2px solid var(--ink);position:sticky;top:0;background:var(--rail);z-index:2;
+}
+[data-theme="bench"] th{border-bottom:1px solid var(--seam)}
+td{padding:6px 9px;border-bottom:1px solid var(--seam);vertical-align:top;color:var(--ink-dim)}
+[data-theme="bench"] td{border-bottom-color:rgba(39,44,52,.6)}
+tbody tr:nth-child(even){background:var(--rail)}
+[data-theme="bench"] tbody tr:nth-child(even){background:transparent}
+td.num,th.num{text-align:right;font-family:var(--sans);font-variant-numeric:tabular-nums}
+tr:hover td{background:var(--row-hover);color:var(--ink)}
+td.subrow{padding-left:22px;color:var(--dim)}
+.sig{color:var(--eosin-text);font-weight:700}
+
+/* ─── Records ───────────────────────────────────────────────────────── */
+.record{background:var(--rack);border:1px solid var(--seam);border-radius:var(--r);
+        padding:11px 12px;margin-bottom:8px;transition:var(--t)}
+.record:hover{border-color:var(--seam-hi)}
+.record.retracted{border-color:var(--fault);background:var(--fault-wash)}
+.record h4{font:700 .86rem/1.4 var(--sans);color:var(--ink);margin-bottom:4px}
+.record .meta{font:400 .68rem/1.5 var(--sans);color:var(--dim);margin-bottom:7px}
+.record .abs{font-size:.74rem;color:var(--ink-dim);max-height:96px;overflow:hidden;
+             line-height:1.55}
+
+/* ─── Handbook ──────────────────────────────────────────────────────── */
+/* Reading width capped, because a 1400px line of prose is unreadable and the
+   rest of the interface is not prose. */
+.article{max-width:74ch;font-size:.83rem;line-height:1.68;color:var(--ink-dim)}
+.article p{margin:0 0 .85rem}
+.article h4{font:700 .78rem/1.4 var(--sans);letter-spacing:.08em;text-transform:uppercase;
+            color:var(--haem-text);margin:1.5rem 0 .55rem}
+.article h4:first-child{margin-top:0}
+.article strong{color:var(--ink);font-weight:700}
+.article code,.panel-body code{font-family:var(--sans);font-size:.76rem;color:var(--eosin-text);
+              background:var(--field-bg);border:1px solid var(--seam);
+              border-radius:var(--r);padding:1px 4px}
+.article ul,.article ol{margin:0 0 .9rem 1.15rem}
+.article li{margin-bottom:.3rem}
+.article li::marker{color:var(--haem)}
+.article blockquote{border-left:2px solid var(--eosin);background:var(--eosin-wash);
+                    padding:9px 12px;margin:0 0 1rem;color:var(--ink-dim)}
+.article pre.term{margin:0 0 1rem;font-size:.73rem}
+.article .tablewrap{margin:0 0 1.1rem;max-height:none}
+.article table{font-size:.76rem}
+.article a.xlink{color:var(--haem-text);cursor:pointer;border-bottom:1px solid var(--haem-edge)}
+.article a.xlink:hover{color:var(--eosin-text);border-bottom-color:var(--eosin)}
+
+/* ─── Destructive controls ──────────────────────────────────────────── */
+/* Eosin, and nowhere else. If something on screen is this colour it removes
+   data. */
+.danger-zone{border:1px solid var(--eosin-edge);border-radius:var(--r);
+             background:var(--eosin-wash);padding:11px 12px}
+.danger-row{display:flex;align-items:center;gap:11px;padding:8px 0;
+            border-bottom:1px solid var(--seam)}
+.danger-row:last-child{border-bottom:0}
+.danger-row .what{flex:1;min-width:0}
+.danger-row .what b{display:block;font:700 .74rem/1.3 var(--sans);color:var(--ink)}
+.danger-row .what span{font:400 .76rem/1.4 var(--sans);color:var(--ink-dim)}
+.danger-row .n{font:700 .86rem/1 var(--sans);color:var(--eosin-text);
+               font-variant-numeric:tabular-nums;min-width:3.2rem;text-align:right}
+.arm{display:flex;align-items:center;gap:8px}
+.arm input[type=text]{width:9rem;font-size:.7rem}
+.rowdel{opacity:0;transition:var(--t)}
+tr:hover .rowdel,.record:hover .rowdel{opacity:1}
+
+/* ─── Misc ──────────────────────────────────────────────────────────── */
+.empty{padding:34px 18px;text-align:center;color:var(--dim);font-size:.82rem;
+       border:1px dashed var(--seam-hi);border-radius:var(--r)}
+.empty b{display:block;color:var(--ink-dim);font-size:.9rem;margin-bottom:5px;font-weight:700}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--seam);margin-bottom:11px}
+.tabs .tab{padding:6px 12px;font:400 .7rem/1 var(--sans);color:var(--dim);cursor:pointer;
+           border-bottom:2px solid transparent;margin-bottom:-1px;transition:var(--t)}
+.tabs .tab:hover{color:var(--ink)}
+.tabs .tab.on{color:var(--ink);border-bottom-color:var(--haem);font-weight:700}
+.figbox{border:1px solid var(--seam);border-radius:var(--r);background:#fff;padding:9px;
+        text-align:center}
+.figbox img{max-width:100%;display:block;margin:0 auto}
+.progress{height:3px;background:var(--seam);border-radius:var(--r);overflow:hidden;margin:6px 0}
+.progress .fill{height:100%;background:var(--haem);transition:width .2s}
+.stub-flag{font:700 .65rem/1 var(--sans);letter-spacing:.05em;text-transform:uppercase;
+           color:var(--warn-text,var(--warn));border:1px solid var(--warn-edge);border-radius:var(--btn-r);
+           padding:3px 5px;margin-left:auto;background:var(--warn-wash)}
+
+/* ─── Dock ──────────────────────────────────────────────────────────── */
+#dock{
+  display:flex;align-items:center;gap:11px;padding:0 13px;background:var(--rack);
+  border-top:1px solid var(--seam);font:400 .66rem/1 var(--sans);color:var(--dim);
+}
+#dock .dot{width:6px;height:6px;border-radius:50%;background:var(--seam-hi);flex:none}
+#dock .dot.live{background:var(--haem);animation:pulse 1.6s ease-in-out infinite}
+#dock .dot.fault{background:var(--fault)}
+#dock a{color:var(--dim);cursor:pointer;text-decoration:none;transition:var(--t)}
+#dock a:hover{color:var(--haem)}
+
+.toast{
+  position:fixed;bottom:40px;right:16px;z-index:500;max-width:420px;
+  background:var(--raise);border:1px solid var(--seam-hi);border-left:2px solid var(--haem);
+  border-radius:var(--r);padding:10px 13px;font-size:.76rem;color:var(--ink-dim);
+  box-shadow:var(--shadow-lg);animation:slidein var(--t);
+}
+@keyframes slidein{from{opacity:0;transform:translateX(8px)}to{opacity:1;transform:none}}
+.toast.err{border-left-color:var(--fault);color:var(--fault)}
+.toast.ok{border-left-color:var(--signal)}
+
+/* ─── Responsive shell ─────────────────────────────────────────────── */
+@media (max-width:1099px){
+  :root{--rail-w:11.5rem}
+  #body{grid-template-columns:var(--rail-w) minmax(0,1fr)}
+  #inspector{display:none}
+  #work{grid-column:2;padding:14px 14px 36px}
+}
+
+@media (max-width:767px){
+  #app{grid-template-rows:auto minmax(0,1fr) 1.8rem}
+  #topbar{min-height:3rem;gap:8px;padding:5px 8px;overflow-x:auto;scrollbar-width:none}
+  #topbar::-webkit-scrollbar{display:none}
+  .wordmark b{font-size:.92rem}
+  .wordmark .ver,#dep-chip,#alpha-chip{display:none}
+  .project-switch{max-width:10.5rem;min-height:2.35rem}
+  .topbar-path{white-space:nowrap}
+  #body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+  #rail{grid-column:1;grid-row:1;display:flex;overflow-x:auto;overflow-y:hidden;
+        padding:0;background:var(--rack);border-right:0;border-bottom:1px solid var(--seam)}
+  .rail-group{display:flex;margin:0;flex:none}
+  .rail-group + .rail-group{border-top:0;border-left:1px solid var(--seam);margin:0;padding:0}
+  .rail-head,.rail-foot{display:none}
+  .nav{width:auto;min-width:max-content;min-height:44px;padding:8px 12px;border-left:0;
+       border-bottom:2px solid transparent;font-size:.76rem}
+  .nav.on{border-left:0;border-bottom-color:var(--haem)}
+  .nav .count{display:none}
+  #work{grid-column:1;grid-row:2;padding:11px 9px 32px}
+  .panel-body{padding:11px 9px}
+  .panel-head{padding:10px 9px;min-height:44px}
+  .workspace,.cols{grid-template-columns:minmax(0,1fr)}
+  button,input,select,textarea{min-height:44px}
+  input[type=checkbox],input[type=radio]{min-height:initial}
+  .tablewrap{max-width:100%;overflow:auto}
+  table{min-width:34rem}
+  .hero{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #dock kbd,#dock span:nth-last-child(2){display:none}
+  .toast{left:9px;right:9px;bottom:38px;max-width:none}
+}
+
+@media (max-width:400px){
+  .hero{grid-template-columns:minmax(0,1fr)}
+  #ds-chip,#runs-chip{display:none}
+}
