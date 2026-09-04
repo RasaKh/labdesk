@@ -241,3 +241,181 @@ const PANE_TIP={
  library:["Handbook","Reference that travels with the tool. The review half explains the order the steps go in and why, and names the pane that handles each one. The statistics half covers choosing a test, what the numbers mean, and the ways results get misread. Links inside an article jump to the pane being described."],
  settings:["Settings","Statistical defaults live here rather than on each test, because an alpha you can change per test after seeing the result is not an alpha. The danger zone at the bottom is the only place that removes whole categories at once."],
 };
+
+// ── rail ──────────────────────────────────────────────────────────────
+const PANES=[
+  ['Project',[['projects','Projects','1']]],
+  ['Workbench',[['data','Data','2'],['analysis','Analysis','3']]],
+  ['Evidence',[['harvest','Harvest','4'],['screen','Screening','5'],['synthesis','Synthesis','6']]],
+  ['Output',[['report','Report','7'],['runs','Run ledger','8']]],
+  ['Reference',[['settings','Settings','9'],['library','Handbook','0']]],
+];
+
+function renderRail(){
+  const rail=$('#rail'); rail.innerHTML='';
+  PANES.forEach(([g,items])=>{
+    const grp=el('div','rail-group');
+    grp.appendChild(el('div','rail-head '+stainOf(g), esc(g)));
+    items.forEach(([id,label,key])=>{
+      const it=el('div','nav'+(STATE.pane===id?' on':''),
+        `<span>${esc(label)}</span><span class="count">${key}</span>`);
+      it.onclick=()=>{ STATE.pane=id; renderRail(); renderPane(); };
+      grp.appendChild(it);
+    });
+    rail.appendChild(grp);
+  });
+  if(BOOT){
+    const foot=el('div','rail-foot');
+    foot.innerHTML=`<b>${BOOT.counts.tests_ready} of ${BOOT.counts.tests_total} tests</b>`+
+      `${BOOT.counts.plots_total} figure types<br>${BOOT.counts.sources_total} sources`;
+    rail.appendChild(foot);
+  }
+}
+
+function panel(title, hint, stainClass, tip){
+  const p=el('div','panel');
+  const h=el('div','panel-head');
+  h.appendChild(el('h3',null,esc(title)));
+  if(tip) h.appendChild(qmark(title, tip));
+  if(stainClass){
+    const dot=el('span','panel-stain '+stainClass);
+    dot.setAttribute('aria-hidden','true');
+    h.appendChild(dot);
+  }
+  if(hint) h.appendChild(el('div','hint',esc(hint)));
+  const chev=el('span','chev','\u25be');
+  if(!hint) chev.style.marginLeft='auto';
+  h.appendChild(chev);
+  const b=el('div','panel-body');
+  p.append(h,b);
+  h.onclick=e=>{ if(!['BUTTON','INPUT','SELECT','TEXTAREA','A','OPTION'].includes(e.target.tagName))
+    p.classList.toggle('collapsed'); };
+  return [p,b];
+}
+
+
+// ── the handbook ──────────────────────────────────────────────────────
+// A small markdown subset, rendered inline. Deliberately small: headings,
+// bold, code, lists, tables, callouts and two kinds of internal link. Links
+// of the form #pane:stats jump to a pane; #entry:meta opens another article.
+function md(src){
+  const lines=String(src).split('\n');
+  let out='', para=[], inTable=false, tHead=false, listType=null;
+  const inline=t=>esc(t)
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\(#pane:([a-z]+)\)/g,
+      '<a class="xlink" data-pane="$2">$1</a>')
+    .replace(/\[([^\]]+)\]\(#entry:([a-z-]+)\)/g,
+      '<a class="xlink" data-entry="$2">$1</a>');
+  const flush=()=>{ if(para.length){ out+='<p>'+inline(para.join(' '))+'</p>'; para=[]; } };
+  const closeList=()=>{ if(listType){ out+='</'+listType+'>'; listType=null; } };
+  for(let raw of lines){
+    const l=raw.trimEnd();
+    if(/^\s*$/.test(l)){ flush(); closeList(); if(inTable){out+='</tbody></table></div>';inTable=false;} continue; }
+    if(/^```/.test(l)){
+      flush(); closeList();
+      if(out.endsWith('</pre>')) continue;
+      const i=lines.indexOf(raw); let buf=[];
+      for(let j=i+1;j<lines.length && !/^```/.test(lines[j]);j++){ buf.push(lines[j]); lines[j]='\u0000'; }
+      out+='<pre class="term">'+esc(buf.join('\n'))+'</pre>'; continue;
+    }
+    if(l==='\u0000') continue;
+    if(/^\|/.test(l)){
+      flush(); closeList();
+      const cells=l.split('|').slice(1,-1).map(c=>c.trim());
+      if(/^[\s|:-]+$/.test(l)){ tHead=false; out+='</thead><tbody>'; continue; }
+      if(!inTable){ inTable=true; tHead=true;
+        out+='<div class="tablewrap"><table><thead><tr>'+
+          cells.map(c=>'<th>'+inline(c)+'</th>').join('')+'</tr>'; continue; }
+      out+='<tr>'+cells.map(c=>'<td>'+inline(c)+'</td>').join('')+'</tr>'; continue;
+    } else if(inTable){ out+='</tbody></table></div>'; inTable=false; }
+    let m;
+    if(m=l.match(/^##\s+(.*)/)){ flush(); closeList(); out+='<h4>'+inline(m[1])+'</h4>'; continue; }
+    if(m=l.match(/^>\s?(.*)/)){ flush(); closeList(); out+='<blockquote>'+inline(m[1])+'</blockquote>'; continue; }
+    if(m=l.match(/^-\s+(.*)/)){
+      flush(); if(listType&&listType!=='ul') closeList();
+      if(!listType){ out+='<ul>'; listType='ul'; }
+      out+='<li>'+inline(m[1])+'</li>'; continue; }
+    if(m=l.match(/^\d+\.\s+(.*)/)){
+      flush(); if(listType&&listType!=='ol') closeList();
+      if(!listType){ out+='<ol>'; listType='ol'; }
+      out+='<li>'+inline(m[1])+'</li>'; continue; }
+    closeList(); para.push(l.trim());
+  }
+  flush(); closeList();
+  if(inTable) out+='</tbody></table></div>';
+  return out;
+}
+
+function paneLibrary(w){
+  const [p,b]=panel('Contents', BOOT.library.reduce((n,s2)=>n+s2.items.length,0)+' articles');
+  w.appendChild(p);
+  const find=el('input'); find.type='text'; find.placeholder='search the handbook';
+  b.appendChild(find);
+  const toc=el('div'); toc.style.marginTop='8px'; b.appendChild(toc);
+  const drawToc=filter=>{
+    toc.innerHTML='';
+    BOOT.library.forEach(sec=>{
+      const items=sec.items.filter(i=>!filter ||
+        (i.title+' '+i.summary).toLowerCase().includes(filter));
+      if(!items.length) return;
+      toc.appendChild(el('div','rail-head '+sec.stain, esc(sec.section)));
+      items.forEach(i=>{
+        const row=el('div','nav'+(STATE.entry===i.id?' on':''),
+          `<span>${esc(i.title)}</span><span class="count">${esc(i.reading)}</span>`);
+        row.onclick=()=>openEntry(i.id);
+        toc.appendChild(row);
+        if(!filter) toc.appendChild(el('div','help',esc(i.summary)))
+          .style.padding='0 16px 7px 18px';
+      });
+    });
+  };
+  find.oninput=()=>drawToc(find.value.trim().toLowerCase());
+  drawToc('');
+
+  const holder=el('div'); holder.id='entry-holder'; w.appendChild(holder);
+  if(STATE.entry) openEntry(STATE.entry, true);
+  else{
+    const [p2,b2]=panel('Where to begin'); holder.appendChild(p2);
+    b2.innerHTML=md(
+      'Two paths through this tool, and the handbook follows both.\n\n'+
+      '- New to the program: read **How the pieces fit together**, then '+
+      '**Your first analysis, end to end**\n'+
+      '- Starting a review: read **A systematic review, start to finish**, '+
+      'which names the pane that handles each step\n'+
+      '- Stuck on a specific decision: the search box above matches article '+
+      'text, not just titles\n\n'+
+      '> Links inside an article are live. `Open the Data pane` moves you '+
+      'there; a link to another article opens it here.');
+  }
+}
+
+async function openEntry(id, keep){
+  STATE.entry=id;
+  const e=await api('/api/library/'+id);
+  if(!keep) renderPane();
+  const holder=$('#entry-holder'); if(!holder) return;
+  holder.innerHTML='';
+  const sec=BOOT.library.find(s2=>s2.items.some(i=>i.id===id));
+  const [p,b]=panel(e.title, e.reading, sec?sec.stain:null);
+  holder.appendChild(p);
+  const art=el('div','article'); art.innerHTML=md(e.body); b.appendChild(art);
+  art.querySelectorAll('.xlink').forEach(a=>{
+    a.onclick=()=>{
+      if(a.dataset.pane){ STATE.pane=a.dataset.pane; renderRail(); renderPane(); }
+      else if(a.dataset.entry){ openEntry(a.dataset.entry); }
+    };
+  });
+  if(e.panes && e.panes.length){
+    const row=el('div','tool-row');
+    e.panes.forEach(pn=>{
+      const btn=el('button','','open '+pn);
+      btn.onclick=()=>{ STATE.pane=pn; renderRail(); renderPane(); };
+      row.appendChild(btn);
+    });
+    b.appendChild(row);
+  }
+  holder.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
