@@ -419,3 +419,306 @@ async function openEntry(id, keep){
   holder.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
+
+// ── projects ──────────────────────────────────────────────────────────
+// The active project scopes every pane. Switching it reloads whatever the
+// current pane is showing rather than silently leaving stale rows on screen,
+// because a corpus from another project looks exactly like this one's.
+async function loadProjects(){
+  const r=await api('/api/projects');
+  STATE.projects=r.projects;
+  const tabProject=sessionStorage.getItem('labdesk.project');
+  STATE.activeProject=(r.projects||[]).some(p=>p.id===tabProject) ? tabProject : r.active;
+  if(STATE.activeProject) sessionStorage.setItem('labdesk.project',STATE.activeProject);
+  STATE.unfiled=r.unfiled;
+  BOOT.project_kinds=r.kinds;
+  paintSwitcher();
+  return r;
+}
+
+function activeProjectObj(){
+  return (STATE.projects||[]).find(p=>p.id===STATE.activeProject)||null;
+}
+
+function paintSwitcher(){
+  const p=activeProjectObj();
+  const btn=$('#project-switch'), nm=$('#project-name');
+  if(!btn||!nm) return;
+  nm.textContent = p ? p.name : 'no project';
+  btn.classList.toggle('none', !p);
+  btn.title = p
+    ? `${p.name} — ${p.progress.done} of ${p.progress.total} stages. Everything you see is scoped to it.`
+    : 'No project selected. You are looking at unfiled work.';
+}
+
+function toggleProjectMenu(){
+  let m=$('#project-menu');
+  if(m && !m.hidden){ m.hidden=true; return; }
+  if(!m){ m=el('div'); m.id='project-menu'; document.body.appendChild(m); }
+  m.innerHTML='';
+  (STATE.projects||[]).forEach(p=>{
+    const it=el('button','pm-item'+(p.id===STATE.activeProject?' on':''));
+    const kind=(BOOT.project_kinds||{})[p.kind]||{};
+    it.innerHTML=`<div class="pm-name">`+
+      `<span class="tool-tag ${kind.stain||'silver'}" style="border:0;background:none;padding:0">`+
+      `${esc((kind.label||p.kind||'').slice(0,10))}</span>${esc(p.name)}</div>`+
+      `<div class="pm-meta">${p.counts.records} records · ${p.counts.datasets} datasets · `+
+      `${p.counts.runs} runs · ${p.progress.percent}%</div>`+
+      `<div class="pm-bar"><span style="width:${p.progress.percent}%"></span></div>`;
+    it.onclick=async()=>{ m.hidden=true; await switchProject(p.id); };
+    m.appendChild(it);
+  });
+  if(!(STATE.projects||[]).length)
+    m.appendChild(el('div','help','No projects yet. Create one to start filing work.'));
+  m.appendChild(el('div','pm-sep'));
+  const nw=el('button','pm-new','+ New project');
+  nw.onclick=()=>{ m.hidden=true; STATE.pane='projects'; STATE.newProject=true;
+                   renderRail(); renderPane(); };
+  m.appendChild(nw);
+  const mgr=el('button','pm-new','Manage projects');
+  mgr.onclick=()=>{ m.hidden=true; STATE.pane='projects'; renderRail(); renderPane(); };
+  m.appendChild(mgr);
+  m.hidden=false;
+  const r=$('#project-switch').getBoundingClientRect();
+  m.style.left=Math.max(8,r.left)+'px';
+  m.style.top=(r.bottom+6)+'px';
+}
+
+async function switchProject(pid){
+  STATE.activeProject=pid;
+  sessionStorage.setItem('labdesk.project',pid);
+  // Everything currently held is from the previous project.
+  STATE.dataset=null; STATE.dsMeta=null; STATE.result=null; STATE.roles={};
+  STATE.preflightToken=null; STATE.pendingAttempt=null;
+  STATE.queue=[]; STATE.qi=0;
+  connectEvents();
+  $('#ds-chip').textContent='no dataset';
+  await loadProjects();
+  const ds=await api('/api/datasets');
+  if(ds.length){ STATE.dataset=ds[0].id; await loadDataset(); }
+  renderPane(); refreshChips();
+  toast('Switched to '+(activeProjectObj()||{}).name,'ok');
+}
+
+function paneProjects(w){
+  // ── new project form ────────────────────────────────────────────────
+  const [pn,bn]=panel(STATE.newProject?'New project':'Start a project', null, null,
+    'A project owns its records, datasets, runs and figures. Switching between '+
+    'projects changes what every pane shows, so two questions can never '+
+    'contaminate each other\'s counts. The kind you pick decides which stages '+
+    'the progress line tracks.');
+  w.appendChild(pn);
+  if(!STATE.newProject) pn.classList.add('collapsed');
+  const F={kind:'review', name:'', question:'', registered:''};
+  bn.appendChild(field({id:'name',label:'Name',type:'text',
+    placeholder:'OEC transplantation in chronic SCI'}, '', (k,v)=>{F[k]=v;}));
+  const kindField=el('div','field');
+  kindField.appendChild(el('label',null,'Kind'));
+  const kc=el('div','chips');
+  Object.entries(BOOT.project_kinds||{}).forEach(([id,k])=>{
+    const c=el('div','chip'+(F.kind===id?' on':''),esc(k.label));
+    c.onclick=()=>{ F.kind=id; $$('.chip',kc).forEach(x=>x.classList.remove('on'));
+                    c.classList.add('on'); kindHint.textContent=k.blurb; };
+    kc.appendChild(c);
+  });
+  kindField.appendChild(kc);
+  const kindHint=el('div','help',(BOOT.project_kinds||{}).review?.blurb||'');
+  kindField.appendChild(kindHint);
+  bn.appendChild(kindField);
+  bn.appendChild(field({id:'question',label:'Question',type:'textarea',
+    placeholder:'In adults with chronic spinal cord injury, does ... compared with ... improve ...?',
+    help:'PICO form for a review. This is the first stage of every pipeline, and it '+
+         'is checked by looking for text here.'}, '', (k,v)=>{F[k]=v;}));
+  bn.appendChild(field({id:'registered',label:'Registration',type:'text',
+    placeholder:'PROSPERO CRD42026…'}, '', (k,v)=>{F[k]=v;}));
+
+  const un=STATE.unfiled||{};
+  const unTotal=Object.values(un).reduce((a,b)=>a+b,0);
+  let adopt=false;
+  if(unTotal){
+    const af=el('div','field');
+    const w2=el('label','check');
+    const cb=el('input'); cb.type='checkbox';
+    cb.onchange=()=>{ adopt=cb.checked; };
+    w2.append(cb, el('span',null,
+      `Adopt unfiled work (${un.records} records, ${un.datasets} datasets, `+
+      `${un.runs} runs, ${un.figures} figures)`));
+    af.appendChild(w2);
+    af.appendChild(el('div','help',
+      'Work created before projects existed is unfiled. Assign it to this project '+
+      'so it stops sitting in a bucket nothing points at.'));
+    bn.appendChild(af);
+  }
+  const mk=el('button','primary','Create project');
+  mk.onclick=async()=>{
+    if(!F.name.trim()) return toast('Give it a name first.','err');
+    const p=await api('/api/projects',{method:'POST',
+      body:JSON.stringify({...F, activate:true, adopt_unfiled:adopt})});
+    STATE.newProject=false;
+    await loadProjects(); await switchProject(p.id);
+  };
+  bn.appendChild(mk);
+
+  // ── the active project's progression ────────────────────────────────
+  if(STATE.activeProject) renderProgress(w);
+
+  // ── all projects ────────────────────────────────────────────────────
+  const [pl,bl]=panel('All projects', (STATE.projects||[]).length+' held');
+  w.appendChild(pl);
+  if(!(STATE.projects||[]).length){
+    bl.appendChild(el('div','empty','<b>No projects yet</b>Everything you create '+
+      'lands in the unfiled bucket until you make one.'));
+  }
+  (STATE.projects||[]).forEach(p=>{
+    const kind=(BOOT.project_kinds||{})[p.kind]||{};
+    const card=el('div','proj-card'+(p.id===STATE.activeProject?' on':''));
+    card.innerHTML=`<div class="proj-head"><h4>${esc(p.name)}</h4>`+
+      `<span class="tag ${kind.stain||'silver'}">${esc(kind.label||p.kind||'')}</span>`+
+      (p.id===STATE.activeProject?'<span class="tag haem">active</span>':'')+
+      `</div>`+
+      (p.question?`<div class="proj-q">${esc(p.question)}</div>`:'')+
+      `<div class="proj-stats">`+
+      `<div><b>${p.progress.percent}%</b>${p.progress.done} of ${p.progress.total} stages</div>`+
+      `<div><b>${p.counts.records}</b>records</div>`+
+      `<div><b>${p.counts.included}</b>included</div>`+
+      `<div><b>${p.counts.datasets}</b>datasets</div>`+
+      `<div><b>${p.counts.runs}</b>runs</div>`+
+      `<div><b>${p.counts.figures}</b>figures</div></div>`;
+    const acts=el('div','inline'); acts.style.marginTop='9px';
+    if(p.id!==STATE.activeProject){
+      const sw=el('button','primary','switch to this');
+      sw.onclick=()=>switchProject(p.id); acts.appendChild(sw);
+    }
+    const del=el('button','danger','delete');
+    del.onclick=async()=>{
+      const purge=window.confirm(
+        `Delete "${p.name}"?\n\nOK also deletes its ${p.counts.records} records, `+
+        `${p.counts.datasets} datasets, ${p.counts.runs} runs and `+
+        `${p.counts.figures} figures.\n\nCancel releases them as unfiled instead.`);
+      if(!await confirmDestructive(`Delete the project "${p.name}"?`,
+          purge?'Its data goes with it.':'Its data is kept, unfiled.')) return;
+      await api(`/api/projects/${p.id}?purge=${purge?1:0}`,{method:'DELETE'});
+      await loadProjects(); renderPane(); refreshChips();
+      toast(purge?'Project and its data deleted':'Project deleted, data unfiled','ok');
+    };
+    acts.appendChild(del);
+    card.appendChild(acts);
+    bl.appendChild(card);
+  });
+}
+
+const STAGE_TARGET={
+  define:{pane:'projects',label:'project details',focus:'question'},
+  register:{pane:'projects',label:'project details',focus:'registered'},
+  search:{pane:'harvest',label:'Harvest'},
+  dedup:{pane:'harvest',label:'Harvest'},
+  screen_ta:{pane:'screen',label:'Screening',stage:'title_abstract'},
+  screen_ft:{pane:'screen',label:'Screening',stage:'full_text'},
+  extract:{pane:'synthesis',label:'Synthesis'},
+  appraise:{pane:'synthesis',label:'Synthesis'},
+  synthesise:{pane:'analysis',label:'Analysis'},
+  import:{pane:'data',label:'Data'},
+  dictionary:{pane:'data',label:'Data'},
+  analyse:{pane:'analysis',label:'Analysis'},
+  figures:{pane:'analysis',label:'Analysis'},
+  report:{pane:'report',label:'Report'},
+};
+function openStageTarget(st){
+  const t=STAGE_TARGET[st.id]; if(!t) return;
+  if(t.stage) STATE.stage=t.stage;
+  if(t.focus) STATE.projectFocus=t.focus;
+  STATE.pane=t.pane; renderRail(); renderPane();
+}
+
+async function renderProgress(w){
+  const d=await api('/api/projects/'+STATE.activeProject);
+  const pr=d.progress;
+  const kind=(BOOT.project_kinds||{})[d.kind]||{};
+  const [p,b]=panel('Progress — '+d.name, `${pr.n_done} of ${pr.n_total} · ${pr.percent}%`,
+    kind.stain,
+    'Each stage reports whether it is done by asking the database, so this line '+
+    'cannot claim you screened records that were never screened. Stages nothing '+
+    'can verify, like registering a protocol, are ticked by hand and marked as '+
+    'such so the two never get confused.');
+  // Insert directly after the new-project panel so it reads top of the pane.
+  w.insertBefore(p, w.children[2] || null);
+
+  // These fields already exist in the project model and PATCH endpoint; expose
+  // them for the active project so progression links have an actionable target.
+  const [pd,bd]=panel('Project details', null, kind.stain,
+    'The question and registration identifier belong to the project itself. '+
+    'Changes here update the existing project rather than creating a new one.');
+  const edit={question:d.question||'', registered:d.registered||''};
+  const qf=field({id:'question',label:'Question',type:'textarea',
+    placeholder:'In adults with ..., does ... compared with ... improve ...?'},
+    edit.question,(k,v)=>{edit[k]=v||'';});
+  qf.dataset.projectField='question'; bd.appendChild(qf);
+  const rf=field({id:'registered',label:'Registration',type:'text',
+    placeholder:'PROSPERO CRD42026… or OSF identifier'},
+    edit.registered,(k,v)=>{edit[k]=v||'';});
+  rf.dataset.projectField='registered'; bd.appendChild(rf);
+  const save=el('button','primary','Save project details');
+  save.onclick=async()=>{
+    await api(`/api/projects/${d.id}`,{method:'PATCH',body:JSON.stringify(edit)});
+    await loadProjects(); renderPane(); toast('Project details saved','ok');
+  };
+  bd.appendChild(save);
+  w.insertBefore(pd,p);
+  if(STATE.projectFocus){
+    const focus=STATE.projectFocus; STATE.projectFocus=null;
+    requestAnimationFrame(()=>{
+      const target=pd.querySelector(`[data-project-field="${focus}"] input, [data-project-field="${focus}"] textarea`);
+      if(target){ target.focus(); target.scrollIntoView({behavior:'smooth',block:'center'}); }
+    });
+  }
+
+  const bar=el('div','progress'); bar.style.height='5px';
+  bar.innerHTML=`<div class="fill" style="width:${pr.percent}%"></div>`;
+  b.appendChild(bar);
+  const list=el('div','stages'); b.appendChild(list);
+  pr.stages.forEach((st,i)=>{
+    const row=el('div','stage '+st.state);
+    const mark=el('div','stage-mark', st.done?'✓':String(i+1));
+    const body=el('div','stage-body');
+    body.innerHTML=`<div class="stage-label">${esc(st.label)}`+
+      (st.done && st.manual && !st.derived
+        ? '<span class="stage-badge manual">marked by hand</span>' : '')+
+      (st.done && st.derived
+        ? '<span class="stage-badge auto">verified</span>' : '')+
+      `</div>`+
+      (st.detail?`<div class="stage-detail">${esc(st.detail)}</div>`:'')+
+      (st.state==='active'?`<div class="stage-blurb">${esc(st.blurb)}</div>`:'')+
+      (st.note?`<div class="stage-note">${esc(st.note)}</div>`:'');
+    const target=STAGE_TARGET[st.id];
+    if(target){
+      let acts=body.querySelector('.stage-actions');
+      if(!acts){ acts=el('div','stage-actions inline'); body.appendChild(acts); }
+      const open=el('button','ghost','open '+target.label+' →');
+      open.onclick=()=>openStageTarget(st);
+      acts.appendChild(open);
+    }
+    // Only offer a manual tick where the database cannot decide it.
+    if(!st.derived){
+      let acts=body.querySelector('.stage-actions');
+      if(!acts){ acts=el('div','stage-actions inline'); body.appendChild(acts); }
+      const t=el('button','ghost', st.manual?'unmark':'mark done');
+      t.onclick=async()=>{
+        await api(`/api/projects/${d.id}/stage`,{method:'POST',
+          body:JSON.stringify({stage:st.id, done:!st.manual})});
+        await loadProjects(); renderPane();
+      };
+      const n=el('button','ghost','note');
+      n.onclick=async()=>{
+        const note=window.prompt('Note for "'+st.label+'"', st.note||'');
+        if(note===null) return;
+        await api(`/api/projects/${d.id}/stage`,{method:'POST',
+          body:JSON.stringify({stage:st.id, note})});
+        await loadProjects(); renderPane();
+      };
+      acts.append(t,n);
+    }
+    row.append(mark, body);
+    list.appendChild(row);
+  });
+}
+
