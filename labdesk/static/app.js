@@ -1107,3 +1107,266 @@ function spec(){
           roles:STATE.roles, params:STATE.params};
 }
 
+async function doRun(){
+  if(STATE.activeProject){
+    await preflight();
+    if(!STATE.preflightToken) return toast('Preflight did not produce a runnable snapshot.','err');
+    const r=await api(`/api/v1/projects/${STATE.activeProject}/analysis-attempts`,{
+      method:'POST',headers:{'Idempotency-Key':crypto.randomUUID()},
+      body:JSON.stringify({preflight_token:STATE.preflightToken})});
+    STATE.pendingAttempt=r.id; STATE.preflightToken=null;
+    toast('Analysis queued with a frozen specification','ok');
+    pollAttempt(r.id,STATE.activeProject); refreshJobs(); return;
+  }
+  const r=await api('/api/run',{method:'POST',body:JSON.stringify(spec())});
+  if(r.job){ toast('Queued as a background job'); return; }
+  if(r.ok===false){
+    const w=$('#work');
+    (r.errors||['Unknown error']).forEach(e=>{
+      const n=el('div','note '+(r.not_implemented?'warn':'err'));
+      n.innerHTML='<pre>'+esc(e)+'</pre>';
+      w.appendChild(n);
+    });
+    if(r.fallback){
+      const btn=el('button',null,'Switch to '+esc(BOOT.tests.entries[r.fallback].label));
+      btn.onclick=()=>selectTest(r.fallback);
+      w.appendChild(btn);
+    }
+    return;
+  }
+  STATE.result=r; refreshChips(); renderPane();
+}
+
+async function pollAttempt(id,project){
+  for(let i=0;i<120 && STATE.pendingAttempt===id;i++){
+    await new Promise(resolve=>setTimeout(resolve,500));
+    if(STATE.activeProject!==project) return;
+    try{
+      const row=await api(`/api/v1/projects/${project}/analysis-attempts/${id}`);
+      if(row.status==='succeeded'){
+        STATE.pendingAttempt=null; STATE.result=row.result; refreshChips(); renderPane(); return;
+      }
+      if(['failed','blocked','rejected','cancelled','interrupted'].includes(row.status)){
+        STATE.pendingAttempt=null; toast(row.error||`Analysis ${row.status}`,'err');
+        if(STATE.pane==='runs') renderPane(); return;
+      }
+    }catch(err){ STATE.pendingAttempt=null; toast(err.message,'err'); return; }
+  }
+}
+
+function renderResult(r){
+  const [p,b]=panel('Result — '+(r.test||''), r.run_id||'');
+  if(r.note) b.appendChild(el('div','note info',esc(r.note)));
+  if(r.warning) b.appendChild(el('div','note',esc(r.warning)));
+  if(r.caveat) b.appendChild(el('div','note info',esc(r.caveat)));
+
+  const hero=el('div','hero');
+  const add=(lab,val,sub,sig)=>{ hero.appendChild(el('div','item',
+    `<div class="lab">${esc(lab)}</div><div class="val${sig?' sig':''}">${val}</div>`+
+    (sub?`<div class="sub">${esc(sub)}</div>`:''))); };
+  if(r.statistic!=null) add(r.df!=null?'statistic':'statistic', num(r.statistic,2),
+    Array.isArray(r.df)?('df '+r.df.map(d=>num(d,1)).join(', ')):(r.df!=null?'df '+num(r.df,1):''));
+  if(r.p!=null) add('p value', pval(r.p).replace('p ',''), starsFor(r.p), r.p<BOOT.config.alpha);
+  if(r.auc!=null) add('AUC', num(r.auc,3), r.auc_ci?`${num(r.auc_ci[0],3)}–${num(r.auc_ci[1],3)}`:'');
+  if(r.pooled!=null) add('pooled', num(r.pooled,2),
+    `${num(r.pooled_ci[0],2)}–${num(r.pooled_ci[1],2)}`);
+  if(r.heterogeneity) add('I²', num(r.heterogeneity.I2,0)+'%','τ² '+num(r.heterogeneity.tau2,3));
+  if(r.effects) Object.entries(r.effects).forEach(([k,v])=>{
+    if(typeof v==='number') add(k.replace(/_/g,' '), num(v,2)); });
+  if(r.n_per_group) add('n per group', r.n_per_group, r.n_total?('total '+r.n_total):'');
+  if(r.power!=null&&r.kind==='power') add('power', (r.power*100).toFixed(1)+'%');
+  if(r.value!=null&&(r.kind==='icc'||r.kind==='kappa')) add(r.form||'kappa', num(r.value,3),
+    r.interpretation||'');
+  if(r.evalue_point!=null) add('E-value', num(r.evalue_point,2),
+    r.evalue_ci?('CI limit '+num(r.evalue_ci,2)):'');
+  if(hero.children.length) b.appendChild(hero);
+
+  if(r.interpretation) b.appendChild(el('div','note ok',esc(r.interpretation)));
+
+  // group summary table
+  if(r.levels&&(r.mean||r.median)){
+    const t=el('table');
+    const hasMean=!!r.mean;
+    t.innerHTML=`<tr><th>Group</th><th class="num">n</th>`+
+      `<th class="num">${hasMean?'Mean':'Median'}</th>`+
+      `<th class="num">${hasMean?'SD':'IQR'}</th></tr>`;
+    r.levels.forEach((l,i)=>{
+      const c=hasMean?r.mean[i]:(r.median||[])[i];
+      const s=hasMean?(r.sd||[])[i]:((r.iqr||[])[i]?`${num(r.iqr[i][0],2)}–${num(r.iqr[i][1],2)}`:'');
+      t.appendChild(el('tr',null,`<td>${esc(l)}</td><td class="num">${(r.n||[])[i]??''}</td>`+
+        `<td class="num">${num(c,2)}</td><td class="num">${typeof s==='number'?num(s,2):esc(s)}</td>`));
+    });
+    b.appendChild(t);
+  }
+
+  if(r.comparisons&&r.comparisons.length>1){
+    b.appendChild(el('div','rail-head eosin', esc(r.posthoc_label||'Comparisons')));
+    const t=el('table');
+    t.innerHTML='<tr><th>A</th><th>B</th><th class="num">Difference</th>'+
+      '<th class="num">g</th><th class="num">p raw</th><th class="num">p adjusted</th><th></th></tr>';
+    r.comparisons.forEach(c=>{
+      t.appendChild(el('tr',null,`<td>${esc(c.a)}</td><td>${esc(c.b)}</td>`+
+        `<td class="num">${num(c.mean_diff,2)}</td><td class="num">${num(c.hedges_g,2)}</td>`+
+        `<td class="num">${num(c.p_raw,4)}</td>`+
+        `<td class="num${c.p<BOOT.config.alpha?' sig':''}">${num(c.p,4)}</td>`+
+        `<td class="sig">${starsFor(c.p)}</td>`));
+    });
+    b.appendChild(t);
+  }
+
+  if(r.coefficients){
+    const t=el('table');
+    t.innerHTML=`<tr><th>Term</th><th class="num">${esc(r.measure||'Estimate')}</th>`+
+      '<th class="num">CI</th><th class="num">p</th><th></th></tr>';
+    r.coefficients.forEach(c=>t.appendChild(el('tr',null,
+      `<td class="mono">${esc(c.term)}</td><td class="num">${num(c.estimate,3)}</td>`+
+      `<td class="num">${num(c.ci[0],3)} – ${num(c.ci[1],3)}</td>`+
+      `<td class="num${c.p<BOOT.config.alpha?' sig':''}">${num(c.p,4)}</td>`+
+      `<td class="sig">${starsFor(c.p)}</td>`)));
+    b.appendChild(t);
+  }
+
+  if(r.adjusted_means){
+    b.appendChild(el('div','rail-head eosin','Adjusted means (covariates at their means)'));
+    b.appendChild(renderGenericRows({rows:r.adjusted_means}));
+  }
+  if(r.test_id==='ancova'&&r.table){
+    b.appendChild(el('div','rail-head eosin','ANCOVA table (type II sums of squares)'));
+    b.appendChild(renderGenericRows({rows:r.table}));
+  }
+  if(r.ph_test){
+    b.appendChild(el('div','rail-head eosin','Proportional hazards: '+esc(r.ph_method||'')));
+    b.appendChild(renderGenericRows({rows:r.ph_test}));
+  }
+  if(r.kind==='table1') b.appendChild(renderTable1(r));
+  if(r.kind==='meta') b.appendChild(renderMeta(r));
+  if(r.rows&&['table','padjust','meta_sensitivity'].includes(r.kind))
+    b.appendChild(renderGenericRows(r));
+  if(r.metrics){
+    const t=el('table'); t.innerHTML='<tr><th>Measure</th><th class="num">Value</th><th class="num">CI</th></tr>';
+    r.metrics.forEach(m=>t.appendChild(el('tr',null,`<td>${esc(m.name)}</td>`+
+      `<td class="num">${num(m.value,3)}</td>`+
+      `<td class="num">${m.ci?num(m.ci[0],3)+' – '+num(m.ci[1],3):'—'}</td>`)));
+    b.appendChild(t);
+  }
+  if(r.blocks&&r.kind==='audit'){
+    const t=el('table'); t.innerHTML='<tr><th>Dataset</th><th class="num">Runs</th>'+
+      '<th class="num">FWER</th><th class="num">Bonferroni alpha</th></tr>';
+    r.blocks.forEach(bl=>t.appendChild(el('tr',null,`<td>${esc(bl.dataset)}</td>`+
+      `<td class="num">${bl.n_runs}</td>`+
+      `<td class="num${bl.fwer>0.3?' sig':''}">${(bl.fwer*100).toFixed(1)}%</td>`+
+      `<td class="num">${bl.bonferroni_alpha??'—'}</td>`)));
+    b.appendChild(t);
+  }
+
+  const sentence=el('div','readout', esc(r.sentence||''));
+  if(r.sentence){
+    b.appendChild(el('div','rail-head eosin','Reportable sentence'));
+    sentence.onclick=()=>{navigator.clipboard.writeText(r.sentence); toast('Copied','ok');};
+    b.appendChild(sentence);
+  }
+  api('/api/report/sentence',{method:'POST',body:JSON.stringify({result:r})})
+    .then(x=>{ if(x.text&&x.text!==r.sentence){
+      const s2=el('div','readout',esc(x.text)); s2.style.marginTop='6px';
+      s2.onclick=()=>{navigator.clipboard.writeText(x.text); toast('Copied','ok');};
+      b.appendChild(s2); }});
+  return p;
+}
+
+function renderTable1(r){
+  const wrap=el('div','tablewrap');
+  const t=el('table');
+  t.innerHTML='<tr><th>Characteristic</th>'+r.header.map(h=>
+    `<th class="num">${esc(h)}<br><span style="font-weight:400;text-transform:none">n = ${r.n[h]}</span></th>`).join('')+
+    '<th class="num">p</th><th class="num">SMD</th></tr>';
+  r.rows.forEach(row=>{
+    const cells=r.header.map(h=>`<td class="num">${esc(row.cells[h]||'')}</td>`).join('');
+    t.appendChild(el('tr',null,`<td>${esc(row.variable)} <span style="color:var(--dim);font-size:10px">${esc(row.summary)}</span></td>`+
+      cells+`<td class="num${row.p<BOOT.config.alpha?' sig':''}">${row.p!=null?num(row.p,3):''}</td>`+
+      `<td class="num">${row.smd!=null?num(row.smd,2):''}</td>`));
+    (row.sub_rows||[]).forEach(sr=>{
+      t.appendChild(el('tr',null,`<td class="subrow">${esc(sr.level)}</td>`+
+        r.header.map(h=>`<td class="num">${esc(sr.cells[h]||'')}</td>`).join('')+
+        '<td></td><td></td>'));
+    });
+  });
+  wrap.appendChild(t);
+  const box=el('div'); box.appendChild(wrap);
+  box.appendChild(el('div','hint',esc(r.footnote||'')));
+  return box;
+}
+
+function renderMeta(r){
+  const wrap=el('div','tablewrap'); const t=el('table');
+  t.innerHTML='<tr><th>Study</th><th class="num">Effect</th><th class="num">CI</th>'+
+    '<th class="num">Weight</th></tr>';
+  r.studies.forEach(s=>t.appendChild(el('tr',null,`<td>${esc(s.label)}</td>`+
+    `<td class="num">${num(s.effect,2)}</td>`+
+    `<td class="num">${num(s.ci[0],2)} – ${num(s.ci[1],2)}</td>`+
+    `<td class="num">${num(s.weight,1)}%</td>`)));
+  t.appendChild(el('tr',null,`<td><b>Pooled (${esc(r.model)})</b></td>`+
+    `<td class="num sig">${num(r.pooled,2)}</td>`+
+    `<td class="num">${num(r.pooled_ci[0],2)} – ${num(r.pooled_ci[1],2)}</td><td></td>`));
+  if(r.prediction_interval) t.appendChild(el('tr',null,'<td>Prediction interval</td><td></td>'+
+    `<td class="num">${num(r.prediction_interval[0],2)} – ${num(r.prediction_interval[1],2)}</td><td></td>`));
+  wrap.appendChild(t); return wrap;
+}
+
+function renderGenericRows(r){
+  const rows=r.rows||[]; if(!rows.length) return el('div','empty','No rows.');
+  const keys=Object.keys(rows[0]).filter(k=>!k.startsWith('_'));
+  const wrap=el('div','tablewrap'); const t=el('table');
+  t.innerHTML='<tr>'+keys.map(k=>`<th class="num">${esc(k.replace(/_/g,' '))}</th>`).join('')+'</tr>';
+  rows.forEach(row=>t.appendChild(el('tr',null, keys.map(k=>{
+    const v=row[k];
+    return `<td class="num">${typeof v==='number'?num(v,3):esc(Array.isArray(v)?v.join(', '):v)}</td>`;
+  }).join(''))));
+  wrap.appendChild(t); return wrap;
+}
+
+// Figures ---------------------------------------------------------------
+function paneFigures(w){
+  if(!STATE.result){ w.appendChild(el('div','empty','Run a test first. '+
+    'Figures are built from a result, so the annotation always matches the statistics.')); return; }
+  const kind=STATE.result.kind;
+  const avail=Object.values(BOOT.plots.entries).filter(p=>p.kinds.includes(kind));
+  const [p,b]=panel('Figures for a '+kind+' result', avail.length+' available'); w.appendChild(p);
+  const strip=el('div','chips');
+  avail.forEach(pl=>{ const o=el('div','chip'+(STATE.plot===pl.id?' on':''),
+    esc(pl.label)+(pl.status==='stub'?' ·':''));
+    o.onclick=()=>{ STATE.plot=pl.id; STATE.plotParams={};
+      (pl.params||[]).concat(BOOT.plots.common).forEach(q=>{
+        if(q.default!==undefined) STATE.plotParams[q.id]=q.default; });
+      renderPane(); }; strip.appendChild(o); });
+  b.appendChild(strip);
+  if(!STATE.plot) return;
+  const entry=BOOT.plots.entries[STATE.plot];
+  const [p2,b2]=panel(entry.label, null, stainOf(entry.group)); p2.id='test-parameters'; w.appendChild(p2);
+  if(entry.blurb) b2.appendChild(el('div','hint',esc(entry.blurb)));
+  const grid=el('div','cols');
+  const left=el('div'), right=el('div');
+  grid.append(left,right); b2.appendChild(grid);
+  (entry.params||[]).forEach(q=>left.appendChild(
+    field(q, STATE.plotParams[q.id], (k,v)=>{STATE.plotParams[k]=v;})));
+  right.appendChild(el('div','rail-head fastgreen','Output'));
+  BOOT.plots.common.forEach(q=>right.appendChild(
+    field(q, STATE.plotParams[q.id], (k,v)=>{STATE.plotParams[k]=v;})));
+  const draw=el('button','primary','Draw'); draw.style.marginTop='8px';
+  const out=el('div'); out.style.marginTop='10px';
+  draw.onclick=async()=>{
+    out.innerHTML='';
+    const r=await api('/api/plot',{method:'POST',body:JSON.stringify({
+      plot:STATE.plot, run_id:STATE.result.run_id, result:STATE.result,
+      spec:spec(), params:STATE.plotParams})});
+    if(r.error){ out.appendChild(el('div','note '+(r.not_implemented?'warn':'err'),
+      '<pre>'+esc(r.error)+'</pre>')); return; }
+    const box=el('div','figbox');
+    const img=el('img'); img.src=r.url+'&t='+Date.now(); box.appendChild(img);
+    out.appendChild(box);
+    const dl=el('a','btn','Download '+esc(r.name));
+    dl.href='/api/download?path='+encodeURIComponent(r.path); dl.style.marginTop='8px';
+    out.appendChild(dl);
+  };
+  b2.append(draw,out);
+}
+
