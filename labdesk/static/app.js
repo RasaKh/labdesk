@@ -722,3 +722,388 @@ async function renderProgress(w){
   });
 }
 
+
+// ── analysis workspace ────────────────────────────────────────────────
+// Statistics and figures in one screen, two columns. Running a test and
+// seeing what it draws are the same activity, and making them separate panes
+// meant re-picking the plot and losing the result on every switch. The
+// builders are unchanged; they are simply handed a column instead of the
+// whole pane.
+function paneAnalysis(w){
+  const ws=el('div','workspace');
+  const left=el('div','ws-col'), right=el('div','ws-col');
+  ws.append(left,right); w.appendChild(ws);
+  paneStats(left);
+  paneFigures(right);
+  // The emitted code belongs with the analysis, not in the jobs rail, where
+  // it no longer fits now that the rail is narrow.
+  if(STATE.code) right.appendChild(codePanel());
+}
+
+function codePanel(){
+  const [p,b]=panel('Generated code', null, null,
+    'A standalone script rather than a transcript: it runs against data.csv '+
+    'without this tool installed, so a reviewer or a supervisor can check the '+
+    'analysis independently.');
+  const tabs=el('div','tabs');
+  ['python','r'].forEach((k,n)=>{
+    const t=el('div','tab'+(n===0?' on':''), k==='r'?'R':'Python');
+    t.onclick=()=>{ $$('.tab',tabs).forEach(x=>x.classList.remove('on'));
+                    t.classList.add('on'); pre.textContent=STATE.code[k]||''; };
+    tabs.appendChild(t);
+  });
+  const pre=el('pre','term', esc(STATE.code.python||''));
+  b.append(tabs,pre);
+  const cp=el('button','ghost','copy');
+  cp.onclick=()=>{navigator.clipboard.writeText(pre.textContent); toast('Copied','ok');};
+  b.appendChild(cp);
+  return p;
+}
+
+// ── panes ─────────────────────────────────────────────────────────────
+function paneHead(id, subtitle){
+  const t=PANE_TIP[id]||[id,''];
+  const h=el('div','view-head');
+  const h1=el('h1',null,esc(t[0]));
+  h1.appendChild(qmark(t[0], t[1]));
+  h.appendChild(h1);
+  if(subtitle) h.appendChild(el('p',null,esc(subtitle)));
+  return h;
+}
+
+function renderPane(){
+  const w=$('#work'); w.innerHTML='';
+  hideTip();
+  w.appendChild(paneHead(STATE.pane));
+  ({data:paneData, analysis:paneAnalysis, harvest:paneHarvest,
+    screen:paneScreen, synthesis:paneSynthesis, report:paneReport, runs:paneRuns,
+    library:paneLibrary, projects:paneProjects,
+    settings:paneSettings}[STATE.pane]||paneData)(w);
+  renderInspector();
+}
+
+// Data ------------------------------------------------------------------
+async function paneData(w){
+  const [p,b]=panel('Datasets'); w.appendChild(p);
+  const bar=el('div','inline');
+  const inp=el('input'); inp.type='file'; inp.style.display='none';
+  inp.onchange=async()=>{
+    const fd=new FormData(); fd.append('file', inp.files[0]);
+    if(STATE.activeProject) fd.append('project',STATE.activeProject);
+    const r=await fetch('/api/datasets/upload',{method:'POST',body:fd}).then(r=>r.json());
+    if(r.error) return toast(r.error,'err');
+    STATE.dataset=r.id; await loadDataset(); toast('Imported '+r.name,'ok');
+  };
+  const up=el('button','primary',' Import file'); up.onclick=()=>inp.click();
+  const pathIn=el('input'); pathIn.type='text'; pathIn.placeholder='or a path on the server';
+  pathIn.className='mono';
+  const go=el('button',null,'Load path');
+  go.onclick=async()=>{ const r=await api('/api/datasets/path',{method:'POST',
+    body:JSON.stringify({path:pathIn.value})});
+    if(r.error) return toast(r.error,'err');
+    STATE.dataset=r.id; await loadDataset(); };
+  bar.append(up,inp,pathIn,go); pathIn.classList.add('grow');
+  b.appendChild(bar);
+
+  const list=el('div'); list.style.marginTop='10px'; b.appendChild(list);
+  const ds=await api('/api/datasets');
+  if(!ds.length) list.appendChild(el('div','empty','No datasets yet.'));
+  else{
+    const t=el('table'); t.innerHTML='<tr><th>Name</th><th class="num">Rows</th>'+
+      '<th class="num">Cols</th><th class="num">Runs</th><th>SHA</th><th></th></tr>';
+    ds.forEach(d=>{
+      const tr=el('tr',null,`<td>${esc(d.name)}</td><td class="num">${d.n_rows}</td>`+
+        `<td class="num">${d.n_cols}</td><td class="num">${d.runs}</td>`+
+        `<td class="mono" style="color:var(--dim);font-size:10px">${esc((d.sha256||'').slice(0,10))}</td>`+
+        `<td></td>`);
+      const btn=el('button','ghost', STATE.dataset===d.id?'active':'select');
+      btn.onclick=async()=>{ STATE.dataset=d.id; await loadDataset(); };
+      const del=el('button','ghost danger rowdel','remove');
+      del.onclick=async(e)=>{
+        e.stopPropagation();
+        const alsoRuns=d.runs>0 && window.confirm(
+          `${d.name} has ${d.runs} analyses in the ledger.\n\n`+
+          'OK deletes those too. Cancel keeps the ledger entries and removes only the data.');
+        if(!await confirmDestructive(`Remove ${d.name}?`,
+            alsoRuns?`${d.runs} ledger entries go with it.`
+                    :'The ledger entries for it are kept.')) return;
+        const r=await api(`/api/datasets/${d.id}${alsoRuns?'?runs=1':''}`,{method:'DELETE'});
+        if(STATE.dataset===d.id){ STATE.dataset=null; STATE.dsMeta=null; STATE.result=null;
+          $('#ds-chip').textContent='no dataset'; }
+        toast(`Removed ${d.name}`+(r.runs_deleted?`, ${r.runs_deleted} runs`:''),'ok');
+        renderPane(); refreshChips();
+      };
+      tr.lastChild.append(btn,del); t.appendChild(tr);
+    });
+    list.appendChild(t);
+  }
+
+  if(!STATE.dsMeta) return;
+  if(STATE.activeProject && STATE.dsMeta.current_version_id){
+    const vr=await api(`/api/v1/projects/${STATE.activeProject}/datasets/${STATE.dataset}/versions`);
+    const [vp,vb]=panel('Dataset versions', `${vr.items.length} immutable revision${vr.items.length===1?'':'s'}`);
+    w.appendChild(vp);
+    const vt=el('table'); vt.innerHTML='<tr><th>Version</th><th>Created</th><th>Shape</th><th>Origin</th></tr>';
+    vr.items.forEach(v=>vt.appendChild(el('tr',null,
+      `<td class="mono">${esc(v.id.slice(0,12))}${v.id===STATE.dsMeta.current_version_id?' · current':''}</td>`+
+      `<td>${new Date(v.created_at*1000).toLocaleString()}</td>`+
+      `<td>${v.n_rows} × ${v.n_cols}</td><td>${esc((v.transform||{}).kind||'import')}</td>`)));
+    vb.appendChild(vt);
+  }
+  const [p2,b2]=panel('Variable dictionary',
+    STATE.dsMeta.n_rows+' rows · '+STATE.dsMeta.n_cols+' columns'); w.appendChild(p2);
+  b2.appendChild(el('div','hint','The inferred type drives which tests will accept a '+
+    'variable. A 0/1 column read as continuous is the commonest silent error, so check '+
+    'this before running anything.'));
+  const wrap=el('div','tablewrap'); wrap.style.marginTop='8px';
+  const t=el('table');
+  t.innerHTML='<tr><th>Variable</th><th>Type</th><th class="num">n unique</th>'+
+    '<th class="num">Missing</th><th>Summary</th></tr>';
+  Object.entries(STATE.dsMeta.dictionary).forEach(([c,d])=>{
+    const sel=el('select');
+    ['unknown','constant','continuous','ordinal','categorical','binary','time','id','text'].forEach(k=>{
+      const o=el('option',null,k); o.value=k; if(d.kind===k)o.selected=true; sel.appendChild(o); });
+    sel.onchange=async()=>{ STATE.dsMeta.dictionary[c].kind=sel.value;
+      STATE.dsMeta.dictionary[c].reviewed=true;
+      await api('/api/datasets/'+STATE.dataset+'/dictionary',
+        {method:'POST',body:JSON.stringify(STATE.dsMeta.dictionary)}); renderPane(); };
+    let summary='';
+    if(d.summary) summary=`median ${num(d.summary.median,2)} (${num(d.summary.q1,2)}–${num(d.summary.q3,2)})`;
+    else if(d.levels) summary=d.levels.slice(0,4).map(l=>`${esc(l[0])}: ${l[1]}`).join(', ');
+    const tr=el('tr',null,`<td class="mono">${esc(c)}</td><td></td>`+
+      `<td class="num">${d.n_unique}</td>`+
+      `<td class="num" ${d.pct_missing>20?'style="color:var(--warn)"':''}>${d.pct_missing}%</td>`+
+      `<td class="mono" style="font-size:10.5px;color:var(--dim)">${summary}</td>`);
+    tr.children[1].appendChild(sel); t.appendChild(tr);
+  });
+  wrap.appendChild(t); b2.appendChild(wrap);
+  const reviewAll=el('button',null,'Mark all variables reviewed');
+  reviewAll.onclick=async()=>{
+    Object.values(STATE.dsMeta.dictionary).forEach(d=>{ d.reviewed=true; });
+    await api('/api/datasets/'+STATE.dataset+'/dictionary',
+      {method:'POST',body:JSON.stringify(STATE.dsMeta.dictionary)});
+    toast('Variable dictionary reviewed','ok'); await loadDataset();
+  };
+  b2.appendChild(reviewAll);
+
+  const [p3,b3]=panel('Preview'); w.appendChild(p3); p3.classList.add('collapsed');
+  const cols=Object.keys(STATE.dsMeta.dictionary);
+  const pw=el('div','tablewrap'); const pt=el('table');
+  pt.innerHTML='<tr>'+cols.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr>';
+  (STATE.dsMeta.preview||[]).slice(0,60).forEach(r=>{
+    pt.appendChild(el('tr',null,'<tr>'+cols.map(c=>
+      `<td class="mono" style="font-size:10.5px">${esc(r[c])}</td>`).join('')));
+  });
+  pw.appendChild(pt); b3.appendChild(pw);
+}
+
+async function loadDataset(){
+  STATE.dsMeta=await api('/api/datasets/'+STATE.dataset);
+  STATE.roles={}; STATE.result=null;
+  $('#ds-chip').innerHTML='<b>'+esc(STATE.dsMeta.name)+'</b> '+STATE.dsMeta.n_rows+'\u00d7'+STATE.dsMeta.n_cols;
+  renderPane(); refreshChips();
+}
+
+// Statistics ------------------------------------------------------------
+function guideSelect(label, value, cols, onChange){
+  const f=el('div','field');
+  f.appendChild(el('label',null,esc(label)));
+  const sel=el('select');
+  sel.appendChild(el('option',null,'— not specified —'));
+  cols.forEach(c=>{ const o=el('option',null,esc(c)); o.value=c;
+    if(value===c)o.selected=true; sel.appendChild(o); });
+  sel.onchange=()=>onChange(sel.value||null);
+  f.appendChild(sel); return f;
+}
+
+async function loadAnalysisGuide(target){
+  if(!STATE.dataset||!STATE.dsMeta||!target) return;
+  const req=++STATE.guideReq;
+  target.innerHTML='<div class="empty">Matching the variable dictionary to method requirements…</div>';
+  const r=await api('/api/analysis/compatible',{method:'POST',body:JSON.stringify({
+    dataset:STATE.dataset, goal:STATE.guideGoal, primary:STATE.guidePrimary,
+    secondary:STATE.guideSecondary, limit:12
+  })});
+  if(req!==STATE.guideReq||!target.isConnected) return;
+  target.innerHTML='';
+  if(r.error){ target.appendChild(el('div','note err',esc(r.error))); return; }
+  if(!r.items||!r.items.length){
+    target.appendChild(el('div','empty','No declared READY methods match this combination. '+
+      'Check the variable dictionary, change the selected variables, or browse the method library below.'));
+    return;
+  }
+  const head=el('div','guide-summary',
+    `<b>${r.total}</b> structurally compatible method${r.total===1?'':'s'}`+
+    (r.total>r.items.length?` · showing ${r.items.length}`:''));
+  target.appendChild(head);
+  r.items.forEach(item=>{
+    const entry=BOOT.tests.entries[item.id];
+    const card=el('div','guide-card');
+    const top=el('div','guide-card-head');
+    top.appendChild(el('div','guide-card-title',esc(item.label)));
+    top.appendChild(el('span','tag '+stainOf(item.group),'compatible'));
+    card.appendChild(top);
+    if(item.blurb) card.appendChild(el('div','guide-blurb',esc(item.blurb)));
+
+    const assigned=[];
+    Object.entries(item.prefill||{}).forEach(([rid,vals])=>{
+      const role=(entry.roles||[]).find(x=>x.id===rid);
+      (vals||[]).forEach(v=>assigned.push(`${role?role.label:rid}: ${v}`));
+    });
+    if(assigned.length)
+      card.appendChild(el('div','guide-prefill','Selected roles · '+esc(assigned.join(' · '))));
+
+    const roleLine=(entry.roles||[]).map(role=>{
+      const opts=(item.role_options||{})[role.id]||[];
+      if(!opts.length&&role.optional) return null;
+      const sample=opts.slice(0,4).join(', ')+(opts.length>4?` +${opts.length-4}`:'');
+      return `${role.label}: ${sample||'none'}`;
+    }).filter(Boolean).join(' · ');
+    if(roleLine) card.appendChild(el('div','guide-roles',esc(roleLine)));
+
+    const actions=el('div','inline guide-actions');
+    const use=el('button','primary','Configure');
+    use.onclick=()=>selectTest(item.id,item.prefill||{},true);
+    actions.appendChild(use); card.appendChild(actions);
+    target.appendChild(card);
+  });
+  target.appendChild(el('div','guide-disclaimer',esc(r.disclaimer||'')));
+}
+
+function analysisGuide(w){
+  const [p,b]=panel('Analysis guide','dictionary × method registry', 'crystal',
+    'This is deterministic constraint matching, not an AI statistician. It shows methods whose declared variable roles can be populated by the reviewed dataset dictionary. It cannot know your scientific question, estimand, causal structure or preregistration.');
+  w.appendChild(p);
+  if(!STATE.dataset||!STATE.dsMeta){
+    b.appendChild(el('div','note info','Choose or import a dataset in Data first. The manual method library below remains available.'));
+    return;
+  }
+  b.appendChild(el('div','guide-intro',
+    'Start from the question shape, then optionally name the variables you actually mean. '+
+    'LabDesk will narrow the method library without pretending that structural compatibility is scientific judgement.'));
+
+  const goals=el('div','guide-goals chips');
+  (BOOT.tests.goals||[]).forEach(g=>{
+    const c=el('div','chip'+(STATE.guideGoal===g.id?' on':''),esc(g.label));
+    c.title=g.blurb||'';
+    c.onclick=()=>{ STATE.guideGoal=g.id; STATE.guidePrimary=null; STATE.guideSecondary=null; renderPane(); };
+    goals.appendChild(c);
+  });
+  b.appendChild(goals);
+  const goal=(BOOT.tests.goals||[]).find(g=>g.id===STATE.guideGoal)||(BOOT.tests.goals||[])[0];
+  if(goal&&goal.blurb) b.appendChild(el('div','help guide-goal-help',esc(goal.blurb)));
+
+  const cols=Object.keys(STATE.dsMeta.dictionary||{});
+  const pick=el('div','cols guide-pickers');
+  pick.appendChild(guideSelect(goal?.primary_label||'Primary variable',STATE.guidePrimary,cols,v=>{
+    STATE.guidePrimary=v; if(v&&STATE.guideSecondary===v) STATE.guideSecondary=null; renderPane();
+  }));
+  pick.appendChild(guideSelect(goal?.secondary_label||'Second variable',STATE.guideSecondary,cols,v=>{
+    STATE.guideSecondary=v; if(v&&STATE.guidePrimary===v) STATE.guidePrimary=null; renderPane();
+  }));
+  b.appendChild(pick);
+
+  const result=el('div','guide-results'); b.appendChild(result);
+  loadAnalysisGuide(result);
+}
+
+function paneStats(w){
+  if(!STATE.dataset && !['padjust','evalue','multiplicity_audit','power_ttest','power_prop',
+      'power_anova','power_corr'].includes(STATE.test)){
+    w.appendChild(el('div','note info','Import a dataset in the Data pane first. '+
+      'The power and p-adjustment tools work without one.'));
+  }
+
+  analysisGuide(w);
+
+  const [p,b]=panel('Browse all statistical methods',
+    BOOT.counts.tests_ready+' of '+BOOT.counts.tests_total+' implemented', null,
+    'Manual/expert route. Use this when you already know the exact method you want; it bypasses the compatibility guide but not server-side validation or the assumption gate.');
+  w.appendChild(p);
+  if(!STATE.test || STATE.testFromGuide) p.classList.add('collapsed');
+  const search=el('input'); search.type='text'; search.placeholder='filter tests';
+  search.oninput=()=>{ $$('.nav',b).forEach(i=>{
+    i.style.display=i.textContent.toLowerCase().includes(search.value.toLowerCase())?'':'none'; }); };
+  b.appendChild(search);
+  const holder=el('div'); holder.style.maxHeight='300px'; holder.style.overflowY='auto';
+  holder.style.marginTop='6px'; b.appendChild(holder);
+  BOOT.tests.groups.forEach(g=>{
+    holder.appendChild(el('div','rail-head '+stainOf(g.group), esc(g.group)));
+    g.items.forEach(it=>{
+      const row=el('div','nav'+(STATE.test===it.id?' on':'')+
+        (it.status==='stub'?' stub':''),
+        `<span>${esc(it.label)}</span>`+(it.status==='stub'?'<span class="stub-flag">stub</span>':''));
+      row.onclick=()=>{ selectTest(it.id,null,false); };
+      holder.appendChild(row);
+    });
+  });
+
+  if(!STATE.test) { w.appendChild(el('div','empty','Use the guide above, or expand the full method library.')); return; }
+  const entry=BOOT.tests.entries[STATE.test];
+  const [p2,b2]=panel(entry.label, null, stainOf(entry.group)); p2.id='test-parameters'; w.appendChild(p2);
+  if(entry.blurb) b2.appendChild(el('div','hint',esc(entry.blurb)));
+  const form=el('div'); form.style.marginTop='8px'; b2.appendChild(form);
+  formFor(entry, form);
+  const gate=el('div'); gate.id='gate'; b2.appendChild(gate);
+  const actions=el('div','inline'); actions.style.marginTop='9px';
+  const run=el('button','primary','Run'); run.onclick=doRun;
+  const pf=el('button',null,'Check assumptions'); pf.onclick=preflight;
+  actions.append(run,pf);
+  b2.appendChild(actions);
+  if(entry.status==='stub')
+    b2.appendChild(el('div','note','Declared but not implemented. Running it '+
+      'will return the exact function signature to write.'));
+  preflight();
+
+  if(STATE.result) w.appendChild(renderResult(STATE.result));
+}
+
+function selectTest(id,prefill=null,fromGuide=false){
+  STATE.test=id; STATE.testFromGuide=!!fromGuide; STATE.result=null; STATE.roles={};
+  const e=BOOT.tests.entries[id];
+  STATE.params={}; (e.params||[]).forEach(p=>{ if(p.default!==undefined) STATE.params[p.id]=p.default; });
+  if(prefill) Object.entries(prefill).forEach(([k,v])=>{ STATE.roles[k]=[...(v||[])]; });
+  renderPane();
+  if(fromGuide){
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      const target=$('#test-parameters');
+      if(target) target.scrollIntoView({behavior:'smooth', block:'start'});
+    }));
+  }
+}
+
+async function preflight(){
+  const g=$('#gate'); if(!g||!STATE.test) return;
+  const path=STATE.activeProject
+    ? `/api/v1/projects/${STATE.activeProject}/analysis/preflight` : '/api/preflight';
+  const r=await api(path,{method:'POST',body:JSON.stringify(spec())});
+  STATE.preflightToken=r.preflight_token||null;
+  g.innerHTML='';
+  if(r.errors&&r.errors.length)
+    r.errors.forEach(e=>g.appendChild(el('div','note err',esc(e))));
+  if(r.checks&&r.checks.length){
+    const strip=el('div','gate');
+    r.checks.forEach(c=>strip.appendChild(el('div','lozenge '+c.state,
+      `<span class="dot"></span>${esc(c.label)}`)));
+    g.appendChild(strip);
+    r.checks.filter(c=>c.state!=='pass').forEach(c=>{
+      const d=el('div','checkdetail '+c.state,
+        `<b>${esc(c.label)}</b> — ${esc(c.detail)}`+
+        (c.fix?`<span class="fix">→ ${esc(c.fix)}</span>`:''));
+      g.appendChild(d);
+    });
+  }
+  if(r.multiplicity_nag)
+    g.appendChild(el('div','note',
+      `${r.prior_runs} tests have already been run on this dataset. `+
+      `At alpha ${BOOT.config.alpha} the chance of at least one false positive is now `+
+      `${((1-Math.pow(1-BOOT.config.alpha,r.prior_runs))*100).toFixed(0)}%.`));
+  if(r.code) STATE.code=r.code;
+  renderInspector();
+}
+
+function spec(){
+  return {test:STATE.test, dataset:STATE.dataset, project:STATE.activeProject,
+          roles:STATE.roles, params:STATE.params};
+}
+
