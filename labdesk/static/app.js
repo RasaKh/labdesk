@@ -1370,3 +1370,367 @@ function paneFigures(w){
   b2.append(draw,out);
 }
 
+// Harvest ---------------------------------------------------------------
+function paneHarvest(w){
+  const [p,b]=panel('Sources', BOOT.counts.sources_total+' declared'); w.appendChild(p);
+  const holder=el('div'); holder.style.maxHeight='240px'; holder.style.overflowY='auto';
+  BOOT.sources.groups.forEach(g=>{
+    holder.appendChild(el('div','rail-head '+stainOf(g.group), esc(g.group)));
+    g.items.forEach(it=>{
+      const row=el('div','nav'+(STATE.source===it.id?' on':'')+
+        (it.status==='stub'?' stub':''),
+        `<span>${esc(it.label)}</span>`+(it.status==='stub'?'<span class="stub-flag">stub</span>':''));
+      row.onclick=()=>{ STATE.source=it.id; STATE.params={};
+        const e=BOOT.sources.entries[it.id];
+        (e.params||[]).forEach(q=>{ if(q.default!==undefined) STATE.params[q.id]=q.default; });
+        renderPane(); };
+      holder.appendChild(row);
+    });
+  });
+  b.appendChild(holder);
+
+  const e=BOOT.sources.entries[STATE.source]; if(!e) return;
+  const [p2,b2]=panel(e.label, e.base, stainOf(e.group)); w.appendChild(p2);
+  if(e.blurb) b2.appendChild(el('div','hint',esc(e.blurb)));
+  const form=el('div'); form.style.marginTop='8px'; b2.appendChild(form);
+  (e.params||[]).forEach(q=>form.appendChild(
+    field(q, STATE.params[q.id], (k,v)=>{STATE.params[k]=v;})));
+  const go=el('button','primary','Search');
+  go.onclick=async()=>{
+    const r=await api('/api/harvest',{method:'POST',
+      body:JSON.stringify({source:STATE.source, params:STATE.params})});
+    toast(r.job?'Search running':'Failed', r.job?'':'err');
+  };
+  b2.appendChild(go);
+  if(e.docs) b2.appendChild(el('div','hint','Docs: '+esc(e.docs)));
+
+  const [p3,b3]=panel('Corpus'); w.appendChild(p3);
+  const bar=el('div','inline');
+  const dd=el('button',null,'Deduplicate');
+  dd.onclick=async()=>{ await api('/api/dedup',{method:'POST',body:'{}'});
+    toast('Deduplicating'); };
+  const rt=el('button',null,'Check retractions');
+  rt.onclick=async()=>{ await api('/api/harvest',{method:'POST',
+    body:JSON.stringify({source:'retraction',params:{scope:'corpus'}})}); toast('Checking'); };
+  const oa=el('button',null,'Resolve open access');
+  oa.onclick=async()=>{ await api('/api/harvest',{method:'POST',
+    body:JSON.stringify({source:'unpaywall',params:{from_corpus:true}})}); toast('Resolving'); };
+  bar.append(dd,rt,oa); b3.appendChild(bar);
+  const list=el('div'); list.style.marginTop='9px'; b3.appendChild(list);
+  const drawList=()=>api('/api/records').then(recs=>{
+    list.innerHTML='';
+    if(!recs.length){ list.appendChild(el('div','empty','Corpus is empty.')); return; }
+    list.appendChild(el('div','hint',recs.length+' records shown.'));
+    recs.slice(0,80).forEach(r=>{
+      const act=el('div','inline'); act.style.marginTop='7px';
+      const rm=el('button','ghost danger rowdel','remove');
+      rm.onclick=async()=>{
+        if(!await confirmDestructive('Remove this record?',
+            'Any screening decision, extraction or risk-of-bias judgement on it goes too.')) return;
+        await api('/api/records/'+r.id,{method:'DELETE'});
+        drawList(); toast('Record removed','ok');
+      };
+      act.appendChild(rm);
+      list.appendChild(recordCard(r, act));
+    });
+  });
+  drawList();
+
+  // ── trim ────────────────────────────────────────────────────────────
+  const [p4,b4]=panel('Trim the corpus', null, null,
+    'Narrowing a search after it has run is normal. Doing it blind is not, so every '+
+    'filter here counts what it would remove and shows a sample before anything goes. '+
+    'Deleting a record also deletes any screening decision, extraction or risk-of-bias '+
+    'judgement attached to it.');
+  w.appendChild(p4);
+  const F={};
+  const grid=el('div','cols');
+  const left=el('div'), right=el('div'); grid.append(left,right);
+  [
+    {id:'query',label:'Keep only records matching',type:'text',
+     placeholder:'olfactory ensheathing',
+     help:'Records that do NOT contain this in the title or abstract are removed.'},
+    {id:'not_query',label:'Remove records matching',type:'text',placeholder:'rat OR murine'},
+    {id:'source',label:'Only from source',type:'select',
+     choices:[['','any']].concat((BOOT.sources.groups||[]).flatMap(g=>g.items.map(i=>[i.id,i.label])))},
+    {id:'year_before',label:'Published before',type:'int',placeholder:'2010'},
+  ].forEach(q=>left.appendChild(field(q, F[q.id], (k,v)=>{F[k]=v;})));
+  [
+    {id:'retracted',label:'Retracted or flagged',type:'bool'},
+    {id:'duplicates',label:'Duplicates',type:'bool'},
+    {id:'no_abstract',label:'No abstract',type:'bool'},
+    {id:'unscreened',label:'Never screened',type:'bool'},
+    {id:'excluded',label:'Already excluded',type:'bool'},
+  ].forEach(q=>right.appendChild(field(q, F[q.id], (k,v)=>{F[k]=v;})));
+  b4.appendChild(grid);
+
+  const out=el('div'); out.style.marginTop='9px';
+  const prev=el('button','','preview');
+  const kill=el('button','danger','delete matched'); kill.disabled=true;
+  let matched=0;
+  prev.onclick=async()=>{
+    const spec=Object.fromEntries(Object.entries(F).filter(([,v])=>v!==null&&v!==''&&v!==false));
+    // A filter that matches everything is almost never what was meant, so it
+    // is called out rather than quietly armed.
+    const r=await api('/api/records/preview',{method:'POST',body:JSON.stringify(spec)});
+    matched=r.matched;
+    out.innerHTML='';
+    const cls=(!Object.keys(spec).length||r.matched===r.total)?'note':'note info';
+    out.appendChild(el('div',cls,
+      (!Object.keys(spec).length||r.matched===r.total)
+        ? `This matches all ${r.total} records, which would empty the corpus. Add a filter first.`
+        : `${r.matched} of ${r.total} records match. ${r.remaining} would remain.`));
+    if(r.sample.length){
+      const t=el('table');
+      t.innerHTML='<tr><th>Would remove</th><th class="num">Year</th><th>Source</th></tr>';
+      r.sample.forEach(x=>t.appendChild(el('tr',null,
+        `<td>${esc((x.title||'').slice(0,90))}</td><td class="num">${x.year||''}</td>`+
+        `<td class="mono">${esc(x.source)}</td>`)));
+      const wr=el('div','tablewrap'); wr.appendChild(t); out.appendChild(wr);
+    }
+    kill.disabled = r.matched===0;
+  };
+  kill.onclick=async()=>{
+    const spec=Object.fromEntries(Object.entries(F).filter(([,v])=>v!==null&&v!==''&&v!==false));
+    if(!Object.keys(spec).length) return toast('Set at least one filter first.','err');
+    if(!await confirmDestructive(`Delete ${matched} records?`,
+        'Screening decisions and extractions on them go too.')) return;
+    const r=await api('/api/records/delete',{method:'POST',body:JSON.stringify(spec)});
+    toast(`${r.deleted} records removed`,'ok');
+    kill.disabled=true; out.innerHTML=''; drawList();
+  };
+  const row=el('div','inline'); row.append(prev,kill);
+  b4.append(row,out);
+}
+
+function recordCard(r, actions){
+  const c=el('div','record'+(r.retracted?' retracted':''));
+  c.appendChild(el('h4',null,esc(r.title||'(no title)')));
+  c.appendChild(el('div','meta',
+    `${esc((r.authors||'').split(';').slice(0,3).join('; '))}${(r.authors||'').split(';').length>3?' et al':''}`+
+    ` · ${esc(r.journal||'')} · ${r.year||''}`));
+  const tags=el('div');
+  tags.innerHTML=`<span class="tagline">${esc(r.source)}</span>`+
+    (r.doi?`<span class="tagline">${esc(r.doi)}</span>`:'')+
+    (r.oa_url?'<span class="tagline oa">open access</span>':'')+
+    (r.retracted==1?'<span class="tagline ret">retracted</span>':'')+
+    (r.retracted==2?'<span class="tagline ret">expression of concern</span>':'');
+  c.appendChild(tags);
+  if(r.abstract) c.appendChild(el('div','abs',esc(r.abstract)));
+  if(actions) c.appendChild(actions);
+  return c;
+}
+
+// Screening -------------------------------------------------------------
+function paneScreen(w){
+  const [pr,br]=panel('Reviewers', null, null,
+    'A reviewer is a stored identity, not a name typed into a box each visit, so '+
+    'decisions attach to a stable id and a typo cannot silently create a third '+
+    'person. Screening the same records twice under different reviewers is what '+
+    'produces a kappa, and blind mode is what makes the second pass independent '+
+    'rather than a repeat.');
+  w.appendChild(pr);
+  const revBar=el('div','chips'); br.appendChild(revBar);
+  const revExtra=el('div','inline'); revExtra.style.marginTop='9px'; br.appendChild(revExtra);
+
+  const drawReviewers=async()=>{
+    const revs=await api('/api/reviewers');
+    STATE.reviewers=revs;
+    if(!STATE.reviewer || !revs.some(r=>r.id===STATE.reviewer))
+      STATE.reviewer=revs[0] && revs[0].id;
+    revBar.innerHTML='';
+    revs.forEach(r=>{
+      const on=STATE.reviewer===r.id;
+      const c=el('div','chip'+(on?' on':''),
+        `<span class="tool-tag ${r.colour}" style="border:0;background:none;padding:0;margin-right:6px">`+
+        `${esc(r.initials)}</span>${esc(r.name)}`+
+        `<span style="opacity:.6;margin-left:7px">${r.decisions}</span>`);
+      c.onclick=()=>{ STATE.reviewer=r.id; drawReviewers(); loadQueue(); };
+      c.ondblclick=async()=>{
+        const name=window.prompt('Rename reviewer', r.name);
+        if(name){ await api('/api/reviewers',{method:'POST',
+          body:JSON.stringify({id:r.id, name})}); drawReviewers(); }
+      };
+      revBar.appendChild(c);
+    });
+    const add=el('div','chip','+ add');
+    add.onclick=async()=>{
+      const name=window.prompt('Reviewer name');
+      if(!name) return;
+      await api('/api/reviewers',{method:'POST',body:JSON.stringify({name})});
+      drawReviewers();
+    };
+    revBar.appendChild(add);
+
+    revExtra.innerHTML='';
+    const cur=revs.find(r=>r.id===STATE.reviewer);
+    if(cur){
+      revExtra.appendChild(el('div','hint',
+        `${esc(cur.name)} has judged ${cur.title_abstract} at title and abstract `+
+        `and ${cur.full_text} at full text. Double-click a name to rename.`));
+      if(revs.length>1){
+        const rm=el('button','ghost danger','remove '+esc(cur.name));
+        rm.onclick=async()=>{
+          if(!await confirmDestructive(`Remove ${cur.name}?`,
+              `Their ${cur.decisions} decisions are kept, so the counts stay intact.`)) return;
+          await api('/api/reviewers/'+cur.id,{method:'DELETE'});
+          STATE.reviewer=null; drawReviewers(); loadQueue();
+        };
+        revExtra.appendChild(rm);
+      }
+    }
+  };
+
+  const [p,b]=panel('Screening'); w.appendChild(p);
+  const bar=el('div','inline');
+  const st=el('select');
+  [['title_abstract','Title and abstract'],['full_text','Full text']].forEach(o=>{
+    const x=el('option',null,o[1]); x.value=o[0]; if(STATE.stage===o[0])x.selected=true;
+    st.appendChild(x); });
+  st.onchange=()=>{ STATE.stage=st.value; loadQueue(); };
+  const blindWrap=el('label','check');
+  const blind=el('input'); blind.type='checkbox'; blind.checked=STATE.blind!==false;
+  blind.onchange=()=>{ STATE.blind=blind.checked; loadQueue(); };
+  blindWrap.append(blind, el('span',null,'blind'));
+  blindWrap.appendChild(qmark('Blind mode',
+    'Hides what the other reviewers decided about a record. Screening twice is only '+
+    'worth the effort if the second pass is independent, so this is on by default. '+
+    'Turn it off when you are deliberately checking someone else rather than '+
+    'duplicating them.'));
+  const undo=el('button','','undo last'); undo.onclick=doUndo;
+  const reset=el('button','danger','reset this stage');
+  reset.onclick=async()=>{
+    if(!await confirmDestructive('Clear every decision at this stage?',
+        'The records themselves are kept, so you can screen them again from scratch.')) return;
+    const r=await api('/api/screen/reset',{method:'POST',body:JSON.stringify(
+      {scope:'stage', stage:STATE.stage, reviewer:STATE.reviewer})});
+    toast(`${r.deleted} decisions cleared`,'ok'); loadQueue();
+  };
+  bar.append(st,blindWrap,undo,reset); b.appendChild(bar);
+  b.appendChild(el('div','hint','Keys: <kbd>i</kbd> include, '+
+    '<kbd>e</kbd> exclude, <kbd>m</kbd> maybe, '+
+    '<kbd>u</kbd> undo, <kbd>s</kbd> skip.'));
+  const area=el('div'); area.id='screen-area'; area.style.marginTop='9px'; b.appendChild(area);
+
+  drawReviewers().then(loadQueue);
+
+  // ── agreement and conflicts ─────────────────────────────────────────
+  const [p2,b2]=panel('Agreement and conflicts', null, null,
+    'Percentage agreement always looks good and means little: two reviewers who '+
+    'exclude 95% of records agree 90% of the time by chance alone. Kappa corrects '+
+    'for that. Below about 0.6 the usual cause is ambiguous inclusion criteria, not '+
+    'a careless reviewer, so re-read the criteria together before re-screening.');
+  w.appendChild(p2);
+  api('/api/screen/agreement?stage='+STATE.stage).then(a=>{
+    if(a.note && a.kappa==null) b2.appendChild(el('div','note info',esc(a.note)));
+    if(a.kappa!=null){
+      b2.appendChild(el('div','hint',
+        `${esc(a.pair[0])} against ${esc(a.pair[1])}, ${a.n_overlap} records judged by both.`));
+      const hero=el('div','hero');
+      const item=(lab,val,sub,sig)=>`<div class="item"><div class="lab">${lab}</div>`+
+        `<div class="val${sig?' sig':''}">${val}</div>`+
+        (sub?`<div class="sub">${esc(sub)}</div>`:'')+`</div>`;
+      hero.innerHTML=item('kappa',num(a.kappa,3),a.interpretation,a.kappa<0.6)+
+        item('agreement',a.percent_agreement+'%','chance-inflated')+
+        item('conflicts',(a.conflicts||[]).length,
+             a.n_unresolved?`${a.n_unresolved} unresolved`:'all resolved',a.n_unresolved>0);
+      b2.appendChild(hero);
+    }
+    (a.conflicts||[]).forEach(cf=>{
+      const card=el('div','record');
+      card.innerHTML=`<h4>${esc(cf.title||'')}</h4>`+
+        `<div class="meta">${esc((cf.authors||'').split(';')[0])} · ${cf.year||''}</div>`+
+        `<div><span class="tag haem">${esc(a.pair[0])}: ${esc(cf.d1)}</span>`+
+        `<span class="tag eosin">${esc(a.pair[1])}: ${esc(cf.d2)}</span>`+
+        (cf.resolved?`<span class="tag fastgreen">resolved: ${esc(cf.resolved)}</span>`:'')+
+        `</div>`;
+      if(!cf.resolved){
+        const row=el('div','inline'); row.style.marginTop='8px';
+        ['include','exclude'].forEach(d=>{
+          const btn=el('button',d==='include'?'primary':'danger','resolve as '+d);
+          btn.onclick=async()=>{
+            const why=window.prompt('Rationale for the adjudicated decision (optional)','')||'';
+            await api('/api/screen/resolve',{method:'POST',body:JSON.stringify(
+              {record_id:cf.record_id, stage:STATE.stage, decision:d, rationale:why,
+               by:STATE.reviewer})});
+            toast('Resolved as '+d,'ok'); renderPane();
+          };
+          row.appendChild(btn);
+        });
+        card.appendChild(row);
+      }
+      b2.appendChild(card);
+    });
+  });
+
+  // ── PRISMA ──────────────────────────────────────────────────────────
+  const [p3,b3]=panel('PRISMA', null, null,
+    'Every number is counted from the screening database rather than typed in, so '+
+    'the diagram in the manuscript cannot drift out of step with what actually '+
+    'happened. Adjudicated decisions override the individual votes.');
+  w.appendChild(p3);
+  api('/api/screen/prisma').then(pr=>{
+    const t=el('table');
+    Object.entries(pr.counts).forEach(([k,v])=>t.appendChild(el('tr',null,
+      `<td>${esc(k.replace(/_/g,' '))}</td><td class="num">${v}</td>`)));
+    b3.appendChild(t);
+    if(pr.exclusion_reasons&&pr.exclusion_reasons.length){
+      b3.appendChild(el('div','rail-head','Exclusion reasons at full text'));
+      const t2=el('table');
+      pr.exclusion_reasons.forEach(r=>t2.appendChild(el('tr',null,
+        `<td>${esc(r.reason)}</td><td class="num">${r.n}</td>`)));
+      b3.appendChild(t2);
+    }
+    const draw=el('button','','draw the diagram');
+    draw.onclick=async()=>{
+      const r=await api('/api/plot',{method:'POST',body:JSON.stringify(
+        {plot:'prisma', result:pr, params:{}})});
+      if(r.error) return toast(r.error,'err');
+      const box=el('div','figbox'); const img=el('img'); img.src=r.url+'&t='+Date.now();
+      box.appendChild(img); b3.appendChild(box);
+    };
+    b3.appendChild(draw);
+  });
+}
+
+async function loadQueue(){
+  if(!STATE.reviewer) return;
+  const q=await api(`/api/screen/queue?stage=${STATE.stage}`+
+    `&reviewer=${encodeURIComponent(STATE.reviewer)}&blind=${STATE.blind===false?0:1}`);
+  STATE.queue=q.records; STATE.qi=0; STATE.reasons=q.reasons;
+  const area=$('#screen-area'); if(!area) return;
+  area.innerHTML='';
+  area.appendChild(el('div','hint',`${q.done} judged, ${q.remaining} remaining of ${q.total}.`));
+  showCurrent();
+}
+
+function showCurrent(){
+  const area=$('#screen-area'); if(!area) return;
+  $$('.record',area).forEach(n=>n.remove());
+  $$('.note',area).forEach(n=>n.remove());
+  const r=STATE.queue[STATE.qi];
+  if(!r){ area.appendChild(el('div','note ok','Queue empty for this stage.')); return; }
+  const actions=el('div','inline'); actions.style.marginTop='8px';
+  [['include','i','primary'],['exclude','e','danger'],['maybe','m','']].forEach(([d,k,cls])=>{
+    const btn=el('button',cls,`${d} `);
+    btn.appendChild(el('kbd',null,k));
+    btn.onclick=()=>judge(d); actions.appendChild(btn);
+  });
+  const skip=el('button','ghost','skip '); skip.appendChild(el('kbd',null,'s'));
+  skip.onclick=()=>{ STATE.qi++; showCurrent(); };
+  actions.appendChild(skip);
+  const sel=el('select'); sel.appendChild(el('option',null,'reason (for exclusions)'));
+  (STATE.reasons||[]).forEach(x=>{const o=el('option',null,x); o.value=x; sel.appendChild(o);});
+  sel.onchange=()=>{ STATE.reason=sel.value; };
+  actions.appendChild(sel);
+  const card=recordCard(r, actions);
+  // Outside blind mode, what the others said rides along with the record.
+  if(r.others && r.others.length){
+    const strip=el('div'); strip.style.marginTop='6px';
+    r.others.forEach(o=>strip.appendChild(
+      el('span','tag '+(o.colour||'silver'), esc(o.initials+': '+o.decision))));
+    card.insertBefore(strip, card.querySelector('.abs')||null);
+  }
+  area.appendChild(card);
+}
+
