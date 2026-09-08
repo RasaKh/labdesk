@@ -1734,3 +1734,188 @@ function showCurrent(){
   area.appendChild(card);
 }
 
+// Synthesis -------------------------------------------------------------
+function paneSynthesis(w){
+  const [p,b]=panel('Extraction'); w.appendChild(p);
+  const sel=el('select');
+  Object.entries(BOOT.forms).forEach(([k,v])=>{ const o=el('option',null,v.label); o.value=k;
+    if(STATE.form===k)o.selected=true; sel.appendChild(o); });
+  sel.onchange=()=>{ STATE.form=sel.value; renderPane(); };
+  b.appendChild(sel);
+  const tbl=el('div'); tbl.style.marginTop='9px'; b.appendChild(tbl);
+  api('/api/extraction?form='+STATE.form).then(x=>{
+    if(!x.rows.length){ tbl.appendChild(el('div','empty',
+      'No extractions yet. Screen studies to full-text inclusion first, then extract.')); return; }
+    const wrap=el('div','tablewrap'); const t=el('table');
+    t.innerHTML='<tr><th>Study</th>'+x.fields.map(f=>`<th class="num">${esc(x.labels[f])}</th>`).join('')+'</tr>';
+    x.rows.forEach(r=>t.appendChild(el('tr',null,`<td>${esc(r._study)}</td>`+
+      x.fields.map(f=>`<td class="num">${esc(r[f]??'')}</td>`).join(''))));
+    wrap.appendChild(t); tbl.appendChild(wrap);
+  });
+
+  const [p2,b2]=panel('Risk of bias'); w.appendChild(p2);
+  const isel=el('select');
+  Object.entries(BOOT.instruments).forEach(([k,v])=>{ const o=el('option',null,v.label); o.value=k;
+    if(STATE.instrument===k)o.selected=true; isel.appendChild(o); });
+  isel.onchange=()=>{ STATE.instrument=isel.value; renderPane(); };
+  b2.appendChild(isel);
+  const inst=BOOT.instruments[STATE.instrument];
+  b2.appendChild(el('div','hint',esc(inst.rule)));
+  const rb=el('div'); rb.style.marginTop='8px'; b2.appendChild(rb);
+  api('/api/rob?instrument='+STATE.instrument).then(x=>{
+    if(!x.rows.length){ rb.appendChild(el('div','empty','No judgements recorded.')); return; }
+    const t=el('table');
+    t.innerHTML='<tr><th>Study</th>'+x.domains.map(d=>`<th>${esc(d)}</th>`).join('')+'<th>Overall</th></tr>';
+    x.rows.forEach(r=>t.appendChild(el('tr',null,`<td>${esc(r.study)}</td>`+
+      x.domains.map(d=>`<td>${esc(r.judgements[d]||'—')}</td>`).join('')+
+      `<td>${esc(r.overall||'')}</td>`)));
+    rb.appendChild(t);
+    const draw=el('button',null,'Traffic light plot');
+    draw.onclick=async()=>{ const g=await api('/api/plot',{method:'POST',
+      body:JSON.stringify({plot:'rob_traffic',result:x,params:{}})});
+      if(g.error) return toast(g.error,'err');
+      const box=el('div','figbox'); const img=el('img'); img.src=g.url+'&t='+Date.now();
+      box.appendChild(img); rb.appendChild(box); };
+    rb.appendChild(draw);
+  });
+
+  const [p3,b3]=panel('To meta-analysis'); w.appendChild(p3);
+  b3.appendChild(el('div','hint','Converts extracted arm-level data into effect sizes '+
+    'and standard errors, on the log scale for ratio measures.'));
+  const msel=el('select');
+  ['SMD','MD','OR','RR'].forEach(m=>{const o=el('option',null,m); o.value=m; msel.appendChild(o);});
+  const conv=el('button',null,'Convert');
+  const outp=el('div'); outp.style.marginTop='8px';
+  conv.onclick=async()=>{
+    const x=await api(`/api/extraction/meta?form=${STATE.form}&measure=${msel.value}`);
+    outp.innerHTML='';
+    outp.appendChild(el('div','note info',`${x.k} studies convertible. ${esc(x.note)}`));
+    if(x.rows.length){
+      const t=el('table'); t.innerHTML='<tr><th>Study</th><th class="num">Effect</th><th class="num">SE</th></tr>';
+      x.rows.forEach(r=>t.appendChild(el('tr',null,`<td>${esc(r.study)}</td>`+
+        `<td class="num">${num(r.effect,3)}</td><td class="num">${num(r.se,3)}</td>`)));
+      outp.appendChild(t);
+    }
+  };
+  b3.append(el('div','inline'), outp);
+  b3.firstChild.append(msel,conv);
+}
+
+// Report ----------------------------------------------------------------
+function paneReport(w){
+  const [p,b]=panel('Methods paragraph'); w.appendChild(p);
+  const gen=el('button','primary','Generate from the run ledger');
+  const out=el('div'); out.style.marginTop='8px';
+  gen.onclick=async()=>{ const m=await api('/api/report/methods');
+    out.innerHTML='';
+    const s=el('div','readout',esc(m.text));
+    s.onclick=()=>{navigator.clipboard.writeText(m.text); toast('Copied','ok');};
+    out.append(s, el('div','hint',esc(m.note||'')));
+  };
+  b.append(gen,out);
+
+  const [p2,b2]=panel('Reporting checklist'); w.appendChild(p2);
+  const sel=el('select');
+  Object.entries(BOOT.checklists).forEach(([k,v])=>{const o=el('option',null,v); o.value=k; sel.appendChild(o);});
+  const load=el('button',null,'Load');
+  const cl=el('div'); cl.style.marginTop='8px';
+  load.onclick=async()=>{ const c=await api('/api/report/checklist/'+sel.value);
+    cl.innerHTML=''; cl.appendChild(el('div','rail-head',esc(c.label)));
+    c.items.forEach(i=>{ const w2=el('label','check');
+      const cb=el('input'); cb.type='checkbox';
+      w2.append(cb, el('span',null,i.n+'. '+esc(i.text))); cl.appendChild(w2); }); };
+  const row=el('div','inline'); row.append(sel,load); b2.append(row,cl);
+
+  const [p3,b3]=panel('Pre-registration draft'); w.appendChild(p3);
+  b3.appendChild(el('div','hint','Worth more than any correction applied afterwards.'));
+  const q=el('input'); q.type='text'; q.placeholder='Research question (PICO)';
+  const mk=el('button',null,'Draft');
+  const po=el('div'); po.style.marginTop='8px';
+  mk.onclick=async()=>{ const r=await api('/api/report/prereg',{method:'POST',
+    body:JSON.stringify({question:q.value})});
+    po.innerHTML=''; po.appendChild(el('pre','term',esc(r.text)));
+    po.appendChild(el('div','hint',esc(r.note))); };
+  b3.append(q,mk,po);
+
+  const [p4,b4]=panel('Reproducibility bundle'); w.appendChild(p4);
+  b4.appendChild(el('div','hint','Data hash, every spec and result, the assumption checks, '+
+    'the figures, and generated Python and R that reruns all of it.'));
+  const mkb=el('button','primary','Build bundle');
+  const bo=el('div'); bo.style.marginTop='8px';
+  mkb.onclick=async()=>{ const r=await api('/api/report/bundle',{method:'POST',
+    body:JSON.stringify({dataset:STATE.dataset})});
+    bo.innerHTML='';
+    const a=el('a','btn',`Download (${r.n_runs} runs, ${r.size_kb} kB)`);
+    a.href='/api/download?path='+encodeURIComponent(r.path); bo.appendChild(a); };
+  b4.append(mkb,bo);
+}
+
+// Runs ------------------------------------------------------------------
+function paneRuns(w){
+  const [pm,bm]=panel('Ledger maintenance', null, null,
+    'Clearing the ledger resets the multiplicity audit, which is the point, but it '+
+    'also means the tests you ran before it are no longer recorded anywhere. Clearing '+
+    'only the failed or blocked entries tidies the list without touching the audit.');
+  w.appendChild(pm);
+  const bar=el('div','inline');
+  [['failed','clear failed'],['blocked','clear blocked'],['all','clear everything']]
+    .forEach(([scope,label])=>{
+      const btn=el('button',scope==='all'?'danger':'',label);
+      btn.onclick=async()=>{
+        if(!await confirmDestructive(`Clear ${scope==='all'?'the whole ledger':scope+' runs'}?`,
+            scope==='all'?'The multiplicity audit restarts from zero.'
+                         :'Successful runs are untouched.')) return;
+        const r=await api('/api/runs/clear',{method:'POST',
+          body:JSON.stringify({scope, dataset:STATE.dataset})});
+        toast(`${r.deleted} entries cleared`,'ok');
+        if(r.note) setTimeout(()=>toast(r.note),400);
+        renderPane(); refreshChips();
+      };
+      bar.appendChild(btn);
+    });
+  const figs=el('button','','clear all figures');
+  figs.onclick=async()=>{
+    if(!await confirmDestructive('Delete every rendered figure?',
+        'The runs that produced them are kept, so they can be redrawn.')) return;
+    const r=await api('/api/figures/clear',{method:'POST',body:'{}'});
+    toast(`${r.deleted} figures deleted`,'ok');
+  };
+  bar.appendChild(figs);
+  bm.appendChild(bar);
+
+  const [p,b]=panel('Run ledger'); w.appendChild(p);
+  b.appendChild(el('div','hint','Every test that has been executed, with its spec, its '+
+    'assumption checks and its result. This is what makes the multiplicity audit possible.'));
+  const list=el('div'); list.style.marginTop='8px'; b.appendChild(list);
+  api('/api/runs').then(rows=>{
+    if(!rows.length){ list.appendChild(el('div','empty','No runs yet.')); return; }
+    const t=el('table');
+    t.innerHTML='<tr><th>When</th><th>Test</th><th>Status</th><th class="num">ms</th><th></th></tr>';
+    rows.forEach(r=>{
+      const tr=el('tr',null,
+        `<td class="mono" style="font-size:10.5px">${new Date(r.created_at*1000).toLocaleString()}</td>`+
+        `<td class="mono">${esc(r.test_id)}</td>`+
+        `<td style="color:${r.status==='ok'?'var(--signal)':r.status==='blocked'?'var(--warn)':'var(--fault)'}">${esc(r.status)}</td>`+
+        `<td class="num">${r.duration_ms??''}</td><td></td>`);
+      const del=el('button','ghost danger rowdel','delete');
+      del.onclick=async(e)=>{
+        e.stopPropagation();
+        if(!await confirmDestructive(`Delete this ${r.test_id} run?`,
+            'Any figures drawn from it go too.')) return;
+        const res=await api('/api/runs/'+r.id,{method:'DELETE'});
+        toast('Run deleted'+(res.figures_deleted?`, ${res.figures_deleted} figures`:''),'ok');
+        renderPane(); refreshChips();
+      };
+      const btn=el('button','ghost','open');
+      btn.onclick=async()=>{ const d=await api('/api/runs/'+r.id);
+        STATE.result=Object.assign({},d.result,{run_id:d.id, checks:d.assumptions});
+        STATE.code={python:d.code_python,r:d.code_r};
+        STATE.pane='analysis'; STATE.test=d.test_id;
+        STATE.roles=(d.spec||{}).roles||{}; STATE.params=(d.spec||{}).params||{};
+        renderRail(); renderPane(); };
+      tr.lastChild.append(btn,del); t.appendChild(tr);
+    });
+    list.appendChild(t);
+  });
+}
+
