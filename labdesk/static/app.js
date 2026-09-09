@@ -1919,3 +1919,329 @@ function paneRuns(w){
   });
 }
 
+// Settings --------------------------------------------------------------
+function paneSettings(w){
+  const groups={
+    'Statistical defaults':['alpha','ci_level','decimals','p_decimals','p_min_display',
+      'multiplicity_default','error_bar_default','assumption_policy','seed',
+      'multiplicity_nag_after','exact_p_in_plots','ns_label'],
+    'Figures':['fig_dpi','fig_format','fig_width_mm','palette','greyscale_check'],
+    'Reporting':['citation_style','stats_report_style','software_footer'],
+    'Harvest':['ncbi_api_key','ncbi_email','semantic_scholar_key','harvest_cache_hours',
+      'harvest_rate_limit'],
+    'Runtime':['max_concurrent_jobs','keep_job_history','confirm_destructive',
+      'provenance_strict'],
+  };
+  Object.entries(groups).forEach(([g,keys])=>{
+    const [p,b]=panel(g); w.appendChild(p);
+      const HELP={
+        alpha:'The threshold everything is judged against. It lives here rather than on each test, because an alpha you can change per test after seeing the result is not an alpha.',
+        assumption_policy:'What happens when a declared assumption fails. Blocking is the honest default if you are working alone; automatic fallback is faster but you must read the note it leaves on the result.',
+        multiplicity_nag_after:'How many tests on one dataset before the interface starts saying so. The count comes from the ledger, so it survives restarts.',
+        seed:'Fixed for every bootstrap, permutation and simulation, so a rerun gives the same numbers and the reproducibility bundle is worth something.',
+        p_min_display:'Below this, p values are reported as a threshold rather than a figure. Reporting p = .0000034 implies a precision the test does not have.',
+        error_bar_default:'SEM bars look tighter than SD bars and mean something different. Whichever you pick, the figure prints the answer in its corner.',
+        confirm_destructive:'Turn this off and the delete buttons stop asking. The danger zone still requires typing the word.',
+        provenance_strict:'Refuses to run anything without hashing the dataset first. Off means faster, and means the ledger can no longer prove which data a result came from.',
+        ncbi_email:'Required by Unpaywall and puts OpenAlex requests in the polite pool. Without it you will be rate limited.',
+        ncbi_api_key:'Raises the PubMed limit from 3 to 10 requests per second. Free from an NCBI account.',
+        citation_style:'Affects generated reference lists only, not the statistics text.',
+        stats_report_style:'APA drops the leading zero from p values and italicises statistics; Vancouver does not.',
+      };
+    keys.forEach(k=>{
+      const v=BOOT.config[k];
+      const type=typeof v==='boolean'?'bool':typeof v==='number'?'number':'text';
+      let p2={id:k, label:k.replace(/_/g,' '), type, help:HELP[k]};
+      if(k==='assumption_policy') p2={id:k,label:'When an assumption fails',type:'select',
+        choices:[['warn','Warn and run anyway'],['block','Block and offer the fallback'],
+                 ['auto_fallback','Switch to the fallback automatically']]};
+      if(k==='stats_report_style') p2={id:k,label:'Results style',type:'select',
+        choices:[['apa','APA'],['vancouver','Vancouver'],['plain','Plain']]};
+      if(k==='error_bar_default') p2={id:k,label:'Default error bars',type:'select',
+        choices:[['sd','Standard deviation'],['sem','Standard error'],['ci95','95% CI']]};
+      b.appendChild(field(p2, v, async(key,val)=>{
+        BOOT.config[key]=val;
+        await api('/api/config',{method:'POST',body:JSON.stringify({[key]:val})});
+        refreshChips();
+      }));
+    });
+  });
+  // ── appearance ──────────────────────────────────────────────────────
+  const [pa,ba]=panel('Appearance', null, null,
+    'Daylight is built from the palette at dr.khosrofar.me, so the two sit next '+
+    'to each other without a seam: the same ground, the same rules, the same navy '+
+    'masthead, square edges. Bench is the dark theme for long sessions and for '+
+    'judging figures without a white field around them. The stain colours carry '+
+    'across both; only their values move, so a tint always means the same thing. '+
+    'The theme button in the topbar switches daylight with the site typeface '+
+    'together, or bench with instrument together. Set the two independently here '+
+    'if you want a combination the topbar button does not offer.');
+  w.appendChild(pa);
+
+  const themeField=el('div','field');
+  themeField.appendChild(el('label',null,'Theme'));
+  const themeChips=el('div','chips');
+  [['daylight','Daylight','site palette'],['bench','Bench','dark']].forEach(([id,label,sub])=>{
+    const c=el('div','chip'+(BOOT.config.theme===id?' on':''),
+      esc(label)+` <span style="opacity:.65;font-size:.9em">${esc(sub)}</span>`);
+    c.onclick=async()=>{
+      BOOT.config.theme=id; applyTheme(id);
+      await api('/api/config',{method:'POST',body:JSON.stringify({theme:id})});
+      renderPane();
+    };
+    themeChips.appendChild(c);
+  });
+  themeField.appendChild(themeChips);
+  ba.appendChild(themeField);
+
+  const typeField=el('div','field');
+  const typeLab=el('label',null,'Typeface');
+  typeLab.appendChild(qmark('Typeface',
+    'Site uses Georgia for display and Arial for prose, which is what '+
+    'dr.khosrofar.me uses. Instrument drops the serif display face for a single '+
+    'sans throughout, which is denser and easier on long tables of numbers. '+
+    'Both work in either theme.'));
+  typeField.appendChild(typeLab);
+  const typeChips=el('div','chips');
+  [['site','Site','Georgia · Arial'],
+   ['instrument','Instrument','system sans']].forEach(([id,label,sub])=>{
+    const c=el('div','chip'+(BOOT.config.typeface===id?' on':''),
+      esc(label)+` <span style="opacity:.65;font-size:.9em">${esc(sub)}</span>`);
+    c.onclick=async()=>{
+      BOOT.config.typeface=id; applyTypeface(id);
+      await api('/api/config',{method:'POST',body:JSON.stringify({typeface:id})});
+      renderPane();
+    };
+    typeChips.appendChild(c);
+  });
+  typeField.appendChild(typeChips);
+  ba.appendChild(typeField);
+
+  const advField=el('div','field');
+  advField.appendChild(el('label',null,'Advanced parameters'));
+  const advChips=el('div','chips');
+  const drawAdvanced=()=>{
+    advChips.innerHTML='';
+    const shown=document.body.classList.contains('show-adv');
+    [['hide','Hide'],['show','Show']].forEach(([id,label])=>{
+      const c=el('div','chip'+((shown&&id==='show')||(!shown&&id==='hide')?' on':''),label);
+      c.onclick=()=>{
+        document.body.classList.toggle('show-adv',id==='show');
+        drawAdvanced();
+      };
+      advChips.appendChild(c);
+    });
+  };
+  drawAdvanced(); advField.appendChild(advChips);
+  advField.appendChild(el('div','help','Shows or hides controls marked as advanced throughout the workbench.'));
+  ba.appendChild(advField);
+
+  // ── interface scale ─────────────────────────────────────────────────
+  const [ps,bs]=panel('Scale', null, null,
+    'Scale drives one CSS variable on the root element, and every size in the '+
+    'interface is expressed relative to it, so type, controls, rails and spacing '+
+    'all move together. This is not the browser zoom; it survives a reload.');
+  w.appendChild(ps);
+  const cur=BOOT.config.ui_scale||110;
+  const sf=el('div','field');
+  sf.appendChild(el('label',null,'Scale <span class="unit">'+cur+'%</span>'));
+  const sl=el('input'); sl.type='range'; sl.min=85; sl.max=160; sl.step=5; sl.value=cur;
+  const readout=sf.querySelector('.unit');
+  sl.oninput=()=>{ readout.textContent=sl.value+'%'; applyScale(sl.value); };
+  sl.onchange=async()=>{
+    BOOT.config.ui_scale=parseInt(sl.value);
+    await api('/api/config',{method:'POST',body:JSON.stringify({ui_scale:BOOT.config.ui_scale})});
+    toast('Scale saved at '+sl.value+'%','ok');
+  };
+  sf.appendChild(sl);
+  const marks=el('div','inline'); marks.style.marginTop='6px';
+  [90,100,110,125,140].forEach(v=>{ const c=el('div','chip mono'+(v==cur?' on':''),v+'%');
+    c.onclick=()=>{ sl.value=v; sl.oninput(); sl.onchange();
+      $$('.chip',marks).forEach(x=>x.classList.remove('on')); c.classList.add('on'); };
+    marks.appendChild(c); });
+  sf.appendChild(marks);
+  bs.appendChild(sf);
+
+  const [p,b]=panel('Dependencies'); w.appendChild(p);
+  const t=el('table');
+  t.innerHTML='<tr><th>Package</th><th>Purpose</th><th>Status</th><th>Install</th></tr>';
+  BOOT.deps.forEach(d=>t.appendChild(el('tr',null,
+    `<td class="mono">${esc(d.pip)}</td><td>${esc(d.why)}</td>`+
+    `<td style="color:${d.ok?'var(--signal)':d.required?'var(--fault)':'var(--warn)'}">`+
+    `${d.ok?esc(d.version):(d.required?'required, missing':'optional, missing')}</td>`+
+    `<td class="mono" style="font-size:.66rem;color:var(--dim)">${d.ok?'':esc(d.install)}</td>`)));
+  b.appendChild(t);
+
+  // ── danger zone ─────────────────────────────────────────────────────
+  const [pd,bd]=panel('Danger zone', null, null,
+    'The only place that removes a whole category at once. Each row counts what it '+
+    'holds before you touch it, and nothing fires without typing the word. Everything '+
+    'here is local to this machine: the config folder holds all of it.');
+  w.appendChild(pd);
+  const zone=el('div','danger-zone'); bd.appendChild(zone);
+  api('/api/reset/scopes').then(scopes=>{
+    scopes.forEach(sc=>{
+      const row=el('div','danger-row');
+      row.innerHTML=`<div class="what"><b>${esc(sc.label)}</b>`+
+        `<span>${esc(sc.description)}</span></div>`+
+        `<div class="n">${sc.count}</div>`;
+      const arm=el('div','arm');
+      const word=sc.id==='everything'?'ERASE':'CLEAR';
+      const inp=el('input'); inp.type='text'; inp.placeholder='type '+word;
+      const go=el('button','danger','clear'); go.disabled=true;
+      inp.oninput=()=>{ go.disabled = inp.value.trim().toUpperCase()!==word; };
+      go.onclick=async()=>{
+        if(!await confirmDestructive(`Clear ${sc.label.toLowerCase()}?`,
+            sc.description+`\n\n${sc.count} items.`)) return;
+        const r=await api('/api/reset',{method:'POST',
+          body:JSON.stringify({scope:sc.id, confirm:true})});
+        if(r.error) return toast(r.error,'err');
+        toast(`${sc.label}: ${r.deleted} removed`,'ok');
+        STATE.dataset=null; STATE.dsMeta=null; STATE.result=null;
+        $('#ds-chip').textContent='no dataset';
+        renderPane(); refreshChips();
+      };
+      arm.append(inp,go);
+      row.appendChild(arm);
+      zone.appendChild(row);
+    });
+  });
+}
+
+// ── inspector ─────────────────────────────────────────────────────────
+function renderInspector(){
+  // Jobs only. The generated code moved into the analysis workspace when this
+  // rail was narrowed to match the left one.
+  const i=$('#inspector'); i.innerHTML='';
+  const [p2,b2]=panel('Jobs'); i.appendChild(p2);
+  const jl=el('div'); jl.id='job-list'; b2.appendChild(jl);
+  const log=el('div','term'); log.id='joblog'; b2.appendChild(log);
+  refreshJobs();
+}
+
+async function refreshJobs(){
+  const jl=$('#job-list'); if(!jl) return;
+  const jobs=await api('/api/jobs');
+  jl.innerHTML='';
+  if(!jobs.length){ jl.appendChild(el('div','hint','No jobs.')); return; }
+  jobs.slice(0,8).forEach(j=>{
+    const d=el('div'); d.style.marginBottom='7px';
+    d.innerHTML=`<div style="font-size:11.5px">${esc(j.title)}</div>`+
+      `<div class="hint mono">${esc(j.status)}${j.note?' · '+esc(j.note):''}</div>`+
+      `<div class="progress"><div class="fill" style="width:${j.progress}%"></div></div>`;
+    if(j.status==='running'){ const c=el('button','ghost','cancel');
+      c.onclick=()=>api('/api/jobs/'+j.id+'/cancel',{method:'POST'}); d.appendChild(c); }
+    if(j.error) d.appendChild(el('div','note err',esc(j.error)));
+    jl.appendChild(d);
+  });
+  const running=jobs.filter(j=>j.status==='running').length;
+  const failed=jobs.some(j=>j.status==='failed');
+  $('#dock-jobs').textContent=running?`${running} running`:`${jobs.length} jobs`;
+  // One lamp beside the wordmark, one dot in the dock, both driven from here.
+  $('#lamp').className='tally-lamp'+(running?' live':failed?' fault':'');
+  $('#dock-dot').className='dot'+(running?' live':failed?' fault':'');
+  $('#dock-status').textContent=running?jobs.find(j=>j.status==='running').title:'idle';
+}
+
+// ── events ────────────────────────────────────────────────────────────
+let EVENT_SOURCE=null;
+function connectEvents(){
+  if(EVENT_SOURCE) EVENT_SOURCE.close();
+  const project=STATE.activeProject;
+  const es=new EventSource('/api/events'+(project?'?project='+encodeURIComponent(project):''));
+  EVENT_SOURCE=es;
+  es.onmessage=e=>{
+    const ev=JSON.parse(e.data);
+    if(project && ev.project_id && ev.project_id!==project) return;
+    if(ev.type==='log'){ const l=$('#joblog');
+      if(l){ l.textContent+=ev.line+'\n'; l.scrollTop=l.scrollHeight; } }
+    if(['status','progress','finished'].includes(ev.type)) refreshJobs();
+    if(ev.type==='finished'){
+      toast(ev.title+': '+ev.status, ev.status==='done'?'ok':'err');
+      if(STATE.pane==='harvest'||STATE.pane==='screen') renderPane();
+      refreshChips();
+    }
+  };
+  es.onerror=()=>{ if(EVENT_SOURCE===es) setTimeout(connectEvents, 4000); es.close(); };
+}
+
+async function refreshChips(){
+  $('#alpha-chip').innerHTML='alpha <b>'+BOOT.config.alpha+'</b>';
+  const runs=await api('/api/runs');
+  const rc=$('#runs-chip');
+  rc.innerHTML='<b>'+runs.length+'</b> runs';
+  // The ledger turns amber once enough tests have been run on one dataset
+  // that the nominal alpha stops meaning what it says.
+  rc.className='topbar-path'+(runs.length>=BOOT.config.multiplicity_nag_after?' warn':'');
+  const missing=BOOT.deps.filter(d=>!d.ok);
+  const c=$('#dep-chip');
+  c.innerHTML=missing.length?('<b>'+missing.length+'</b> pkg missing'):'all pkg present';
+  c.className='topbar-path'+(missing.some(m=>m.required)?' warn':'');
+}
+
+// ── keys ──────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e=>{
+  if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+  const map={'1':'projects','2':'data','3':'analysis','4':'harvest','5':'screen',
+             '6':'synthesis','7':'report','8':'runs','9':'settings','0':'library'};
+  if(map[e.key]){ STATE.pane=map[e.key]; renderRail(); renderPane(); return; }
+  if(STATE.pane==='screen'){
+    if(e.key==='i') judge('include');
+    if(e.key==='e') judge('exclude');
+    if(e.key==='m') judge('maybe');
+    if(e.key==='u') doUndo();
+    if(e.key==='s'){ STATE.qi++; showCurrent(); }
+  }
+  if(e.key==='Enter'&&e.metaKey&&STATE.pane==='analysis') doRun();
+});
+
+
+// ── appearance ────────────────────────────────────────────────────────
+// Theme and typeface are attributes on the root element, so one write swaps
+// every token at once. Both persist server-side rather than in localStorage,
+// because the rest of the configuration already lives there and splitting it
+// means the two disagree after a reset.
+function applyTheme(name){
+  document.documentElement.dataset.theme = (name==='bench') ? 'bench' : 'daylight';
+}
+function applyTypeface(name){
+  document.documentElement.dataset.type = (name==='instrument') ? 'instrument' : 'site';
+}
+function applyScale(pct){
+  document.documentElement.style.setProperty('--fs', (Number(pct)||110)/100);
+}
+async function toggleTheme(){
+  // The topbar button is a single-press preset: daylight always pairs with the
+  // site typeface and bench always pairs with instrument. Any other pairing
+  // is a deliberate choice, so it only exists as two independent controls in
+  // Settings, never as a side effect of this button.
+  const goingDark = document.documentElement.dataset.theme!=='bench';
+  const theme = goingDark ? 'bench' : 'daylight';
+  const typeface = goingDark ? 'instrument' : 'site';
+  applyTheme(theme);
+  applyTypeface(typeface);
+  BOOT.config.theme = theme;
+  BOOT.config.typeface = typeface;
+  await api('/api/config',{method:'POST',body:JSON.stringify({theme, typeface})});
+  if(STATE.pane==='settings') renderPane();
+}
+
+// ── boot ──────────────────────────────────────────────────────────────
+(async function(){
+  BOOT=await api('/api/bootstrap');
+  $('#version').textContent='v'+BOOT.app.version;
+  applyScale(BOOT.config.ui_scale);
+  applyTheme(BOOT.config.theme);
+  applyTypeface(BOOT.config.typeface);
+  $('#theme-toggle').onclick=toggleTheme;
+  $('#dock-clear').onclick=async()=>{ await api('/api/jobs/clear',{method:'POST'}); refreshJobs(); };
+  $('#project-switch').onclick=e=>{ e.stopPropagation(); toggleProjectMenu(); };
+  document.addEventListener('click', e=>{
+    const m=$('#project-menu');
+    if(m && !m.hidden && !e.target.closest('#project-menu')) m.hidden=true;
+  });
+  await loadProjects();
+  renderRail(); renderPane(); refreshChips(); connectEvents();
+  const ds=await api('/api/datasets');
+  if(ds.length){ STATE.dataset=ds[0].id; await loadDataset(); }
+})();
