@@ -1,0 +1,1409 @@
+{
+  "schema_version": 1,
+  "analysis": [
+    {
+      "id": "describe",
+      "label": "Descriptive summary",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "table1",
+      "label": "Table 1: baseline characteristics",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "freq",
+      "label": "Frequency table",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "crosstab",
+      "label": "Cross-tabulation",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "normality_check",
+      "label": "Normality",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "variance_check",
+      "label": "Equality of variances",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "outlier_check",
+      "label": "Outlier screen",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "missing_check",
+      "label": "Missing data pattern",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "power_achieved",
+      "label": "Achieved power",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "ttest_ind",
+      "label": "Independent samples t-test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "ttest_paired",
+      "label": "Paired t-test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "ttest_1samp",
+      "label": "One-sample t-test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "mannwhitney",
+      "label": "Mann-Whitney U",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "wilcoxon",
+      "label": "Wilcoxon signed-rank",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "wilcoxon_1samp",
+      "label": "One-sample Wilcoxon",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "permutation_two",
+      "label": "Permutation test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "bootstrap_diff",
+      "label": "Bootstrap difference",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "brunner_munzel",
+      "label": "Brunner-Munzel",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "anova_oneway",
+      "label": "One-way ANOVA",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "anova_factorial",
+      "label": "Factorial ANOVA",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "ancova",
+      "label": "ANCOVA",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "anova_rm",
+      "label": "Repeated-measures ANOVA",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy",
+        "pingouin"
+      ]
+    },
+    {
+      "id": "anova_mixed",
+      "label": "Mixed ANOVA",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "pingouin"
+      ]
+    },
+    {
+      "id": "manova",
+      "label": "MANOVA",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "kruskal",
+      "label": "Kruskal-Wallis",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "friedman",
+      "label": "Friedman test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "art_anova",
+      "label": "Aligned rank transform ANOVA",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "welch_anova",
+      "label": "Welch's ANOVA",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "pairwise",
+      "label": "Pairwise comparisons",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "padjust",
+      "label": "Adjust a set of p values",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "multiplicity_audit",
+      "label": "Multiplicity audit",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "chi2",
+      "label": "Chi-square test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "fisher",
+      "label": "Fisher's exact test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "mcnemar",
+      "label": "McNemar's test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "cochran_q",
+      "label": "Cochran's Q",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "armitage",
+      "label": "Cochran-Armitage trend test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "prop_test",
+      "label": "Proportions and their contrast",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "binomial",
+      "label": "One-sample proportion",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "goodness_fit",
+      "label": "Goodness of fit",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "correlation",
+      "label": "Correlation",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "icc",
+      "label": "Intraclass correlation",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy",
+        "pingouin"
+      ]
+    },
+    {
+      "id": "bland_altman",
+      "label": "Bland-Altman agreement",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "kappa",
+      "label": "Kappa agreement",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "cronbach",
+      "label": "Internal consistency",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "passing_bablok",
+      "label": "Passing-Bablok regression",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "deming",
+      "label": "Deming regression",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "linreg",
+      "label": "Linear regression",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "logreg",
+      "label": "Logistic regression",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy",
+        "sklearn"
+      ]
+    },
+    {
+      "id": "ordinal_reg",
+      "label": "Ordinal logistic regression",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "multinom_reg",
+      "label": "Multinomial logistic regression",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "poisson_reg",
+      "label": "Poisson and negative binomial",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "quantile_reg",
+      "label": "Quantile regression",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "mixed_model",
+      "label": "Linear mixed-effects model",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "gee",
+      "label": "Generalised estimating equations",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "penalised_reg",
+      "label": "Penalised regression",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "sklearn"
+      ]
+    },
+    {
+      "id": "model_compare",
+      "label": "Model comparison",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "kaplan_meier",
+      "label": "Kaplan-Meier",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "cox",
+      "label": "Cox proportional hazards",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "lifelines"
+      ]
+    },
+    {
+      "id": "competing_risks",
+      "label": "Competing risks",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "lifelines"
+      ]
+    },
+    {
+      "id": "rmst",
+      "label": "Restricted mean survival time",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "lifelines"
+      ]
+    },
+    {
+      "id": "parametric_survival",
+      "label": "Parametric survival (AFT)",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "lifelines"
+      ]
+    },
+    {
+      "id": "roc",
+      "label": "ROC analysis",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "sklearn"
+      ]
+    },
+    {
+      "id": "roc_compare",
+      "label": "Compare two ROC curves",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "sklearn"
+      ]
+    },
+    {
+      "id": "diag_2x2",
+      "label": "Diagnostic accuracy from a 2x2",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "calibration",
+      "label": "Calibration",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "sklearn"
+      ]
+    },
+    {
+      "id": "dca",
+      "label": "Decision curve analysis",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "reclassification",
+      "label": "Reclassification (NRI and IDI)",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "classifier_eval",
+      "label": "Classifier evaluation",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "sklearn"
+      ]
+    },
+    {
+      "id": "meta_effect",
+      "label": "Meta-analysis",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "meta_bias",
+      "label": "Publication bias",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "meta_regression",
+      "label": "Meta-regression",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "meta_sensitivity",
+      "label": "Leave-one-out and cumulative",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "network_meta",
+      "label": "Network meta-analysis",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "tsa",
+      "label": "Trial sequential analysis",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "prevalence_meta",
+      "label": "Proportion meta-analysis",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "propensity",
+      "label": "Propensity score",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "sklearn"
+      ]
+    },
+    {
+      "id": "did",
+      "label": "Difference in differences",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "its",
+      "label": "Interrupted time series",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "iv",
+      "label": "Instrumental variables",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "statsmodels"
+      ]
+    },
+    {
+      "id": "mr",
+      "label": "Mendelian randomisation",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "evalue",
+      "label": "E-value",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "standardised_rates",
+      "label": "Standardised rates",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "cluster_adjust",
+      "label": "Cluster adjustment",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "power_ttest",
+      "label": "Sample size: two means",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "power_prop",
+      "label": "Sample size: two proportions",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "power_anova",
+      "label": "Sample size: ANOVA",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "power_corr",
+      "label": "Sample size: correlation",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "power_survival",
+      "label": "Sample size: survival",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "power_agreement",
+      "label": "Sample size: agreement and reliability",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "power_sim",
+      "label": "Simulation-based power",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "qpcr",
+      "label": "qPCR relative quantification",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "elisa",
+      "label": "ELISA four-parameter fit",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "diff_expression",
+      "label": "Differential expression",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "dimreduction",
+      "label": "Dimensionality reduction",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "sklearn"
+      ]
+    },
+    {
+      "id": "clustering",
+      "label": "Clustering",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "sklearn"
+      ]
+    },
+    {
+      "id": "enrichment",
+      "label": "Enrichment analysis",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "requests"
+      ]
+    },
+    {
+      "id": "dose_response",
+      "label": "Dose-response",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "flow_gating",
+      "label": "Flow cytometry summary",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "tost",
+      "label": "Equivalence testing (TOST)",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "noninferiority",
+      "label": "Non-inferiority test",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "bayes_ttest",
+      "label": "Bayesian t-test",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy",
+        "pingouin"
+      ]
+    },
+    {
+      "id": "bayes_prop",
+      "label": "Bayesian proportions",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    },
+    {
+      "id": "interim",
+      "label": "Interim analysis and alpha spending",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": [
+        "scipy"
+      ]
+    }
+  ],
+  "plots": [
+    {
+      "id": "bar_sig",
+      "label": "Bar chart with significance brackets",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "box",
+      "label": "Box plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "violin",
+      "label": "Violin plot",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "raincloud",
+      "label": "Raincloud plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "beeswarm",
+      "label": "Beeswarm",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "means_ci",
+      "label": "Means with confidence intervals",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "paired_lines",
+      "label": "Paired before and after",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "spaghetti",
+      "label": "Individual trajectories",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "interaction",
+      "label": "Interaction plot",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "hist",
+      "label": "Histogram",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "qq",
+      "label": "Q-Q plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "missing_map",
+      "label": "Missingness by variable",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "scatter_fit",
+      "label": "Scatter with fit",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "corr_matrix",
+      "label": "Correlation matrix",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "residual_plots",
+      "label": "Regression diagnostics",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "coef_forest",
+      "label": "Coefficient plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "pair_grid",
+      "label": "Scatter matrix",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "bland_altman",
+      "label": "Bland-Altman plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "km_curve",
+      "label": "Kaplan-Meier curve",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "roc",
+      "label": "ROC curve",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "pr_curve",
+      "label": "Precision-recall curve",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "calibration",
+      "label": "Calibration plot",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "decision_curve",
+      "label": "Decision curve",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "forest",
+      "label": "Forest plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "funnel",
+      "label": "Funnel plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "forest_effect",
+      "label": "Effect estimate plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "stacked_bar",
+      "label": "Stacked or grouped bar",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "mosaic",
+      "label": "Mosaic plot",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "baujat",
+      "label": "Baujat plot",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "volcano",
+      "label": "Volcano plot",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "heatmap",
+      "label": "Heatmap",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "standard_curve",
+      "label": "Standard curve",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "plate_heatmap",
+      "label": "Plate layout heatmap",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "ct_qc",
+      "label": "Replicate quality control",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "dose_curve",
+      "label": "Dose-response curve",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "pca_biplot",
+      "label": "PCA biplot",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "scree",
+      "label": "Scree plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "embedding",
+      "label": "Embedding scatter",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "dendrogram",
+      "label": "Dendrogram",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "prisma",
+      "label": "PRISMA flow diagram",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "consort",
+      "label": "CONSORT flow diagram",
+      "declared_status": "stub",
+      "capability": "unimplemented",
+      "dependencies": []
+    },
+    {
+      "id": "rob_traffic",
+      "label": "Risk of bias traffic light",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "power_curve",
+      "label": "Power curve",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "null_distribution",
+      "label": "Permutation null",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "bootstrap_dist",
+      "label": "Bootstrap distribution",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "pvalue_hist",
+      "label": "p value histogram",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    },
+    {
+      "id": "tost_plot",
+      "label": "Equivalence plot",
+      "declared_status": "ready",
+      "capability": "available",
+      "dependencies": []
+    }
+  ],
+  "sources": [
+    {
+      "id": "pubmed",
+      "label": "PubMed",
+      "declared_status": "ready"
+    },
+    {
+      "id": "europepmc",
+      "label": "Europe PMC",
+      "declared_status": "ready"
+    },
+    {
+      "id": "openalex",
+      "label": "OpenAlex",
+      "declared_status": "ready"
+    },
+    {
+      "id": "crossref",
+      "label": "Crossref",
+      "declared_status": "ready"
+    },
+    {
+      "id": "semantic_scholar",
+      "label": "Semantic Scholar",
+      "declared_status": "stub"
+    },
+    {
+      "id": "biorxiv",
+      "label": "bioRxiv and medRxiv",
+      "declared_status": "ready"
+    },
+    {
+      "id": "unpaywall",
+      "label": "Unpaywall",
+      "declared_status": "ready"
+    },
+    {
+      "id": "retraction",
+      "label": "Retraction check",
+      "declared_status": "ready"
+    },
+    {
+      "id": "ctgov",
+      "label": "ClinicalTrials.gov",
+      "declared_status": "ready"
+    },
+    {
+      "id": "ictrp",
+      "label": "WHO ICTRP",
+      "declared_status": "stub"
+    },
+    {
+      "id": "ctis",
+      "label": "EU CTIS",
+      "declared_status": "stub"
+    },
+    {
+      "id": "isrctn",
+      "label": "ISRCTN",
+      "declared_status": "stub"
+    },
+    {
+      "id": "prospero",
+      "label": "PROSPERO",
+      "declared_status": "stub"
+    },
+    {
+      "id": "openfda",
+      "label": "openFDA",
+      "declared_status": "ready"
+    },
+    {
+      "id": "chembl",
+      "label": "ChEMBL",
+      "declared_status": "stub"
+    },
+    {
+      "id": "rxnorm",
+      "label": "RxNorm",
+      "declared_status": "stub"
+    },
+    {
+      "id": "geo",
+      "label": "GEO",
+      "declared_status": "stub"
+    },
+    {
+      "id": "gwas",
+      "label": "GWAS Catalog",
+      "declared_status": "stub"
+    },
+    {
+      "id": "clinvar",
+      "label": "ClinVar",
+      "declared_status": "stub"
+    },
+    {
+      "id": "uniprot",
+      "label": "UniProt",
+      "declared_status": "ready"
+    },
+    {
+      "id": "ensembl",
+      "label": "Ensembl",
+      "declared_status": "stub"
+    },
+    {
+      "id": "string",
+      "label": "STRING",
+      "declared_status": "stub"
+    },
+    {
+      "id": "reactome",
+      "label": "Reactome",
+      "declared_status": "stub"
+    },
+    {
+      "id": "who_gho",
+      "label": "WHO Global Health Observatory",
+      "declared_status": "stub"
+    },
+    {
+      "id": "eurostat",
+      "label": "Eurostat",
+      "declared_status": "stub"
+    }
+  ]
+}
