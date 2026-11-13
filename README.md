@@ -11,7 +11,7 @@ python run.py            # http://127.0.0.1:5055
 
 ---
 
-## The problem it solves
+## Background
 
 A single study passes through six or seven programs. The search lives in a
 browser, the references in a reference manager, the screening in a spreadsheet,
@@ -38,9 +38,9 @@ paragraph is assembled from the ledger rather than from memory.
 
 ---
 
-## What it does
+## Features
 
-### Find the evidence
+### Literature search
 
 Live searches against PubMed, Europe PMC, OpenAlex, Crossref, ClinicalTrials.gov,
 bioRxiv and medRxiv, openFDA and UniProt, with fifteen more sources declared
@@ -50,24 +50,24 @@ across sources by DOI and by fuzzy title within year.
 Two things happen there that reference managers do not do. Every DOI is checked
 against Crossref's retraction register, so a retracted trial is flagged before
 it reaches your reference list. And every DOI is resolved through Unpaywall, so
-full-text screening is not a scavenger hunt.
+full text is easier to find for screening.
 
-### Screen it properly
+### Screening
 
 Keyboard-driven screening: `i` include, `e` exclude, `m` maybe, `s` skip, `u`
-undo, where undo genuinely deletes the judgment rather than stepping over it.
+undo, where undo deletes the judgment rather than stepping over it.
 
 Reviewers are stored identities rather than a name typed into a box, so
-decisions attach to a stable id and progress is tracked per person. **Blind
-mode** hides what the other reviewer decided, which is the only thing that
-makes screening twice worth the effort. Cohen's kappa and a conflict list come
+decisions attach to a stable id and progress is tracked per person. Blind
+mode hides what the other reviewer decided; without it, the second screening is
+not independent. Cohen's kappa and a conflict list come
 out of it, and conflicts are adjudicated with a recorded rationale that sits
 alongside the original votes rather than overwriting them.
 
-The PRISMA 2020 diagram is generated from that database. It cannot drift out of
-step with what you actually did, because it is counting what you actually did.
+The PRISMA 2020 diagram is generated from that database, so its counts always
+match the screening records.
 
-### Extract and appraise
+### Extraction and risk of bias
 
 Structured extraction forms for randomized, observational and diagnostic
 accuracy designs. Risk of bias with RoB 2, ROBINS-I, Newcastle-Ottawa and
@@ -77,7 +77,7 @@ guessed, and rendered as a traffic-light plot.
 Extracted arm-level numbers convert straight into effect sizes and standard
 errors, on the log scale for ratio measures, ready for the meta-analysis.
 
-### Run the statistics
+### Statistics
 
 103 tests across 15 groups, 62 implemented. Two-group and factorial comparisons,
 rank-based equivalents, post-hoc families, categorical and proportion measures,
@@ -87,10 +87,9 @@ diagnostics, causal and epidemiological methods, power in any direction, and
 bench assays including qPCR and ELISA curve fitting.
 
 Everything declared but not yet implemented appears in the interface, validates
-its inputs, and returns the exact function signature to write. The shape of the
-tool is complete even where the arithmetic is not.
+its inputs, and returns the exact function signature to write.
 
-The Analysis pane starts with a **deterministic compatibility guide**, so the
+The Analysis pane starts with a deterministic compatibility guide, so the
 researcher does not have to begin from a test name. The guide connects the reviewed
 variable dictionary to the role requirements already declared in the statistics
 registry: for example, a continuous outcome plus a two-level grouping variable can
@@ -100,7 +99,7 @@ matching. It does not infer the scientific question, causal
 structure, estimand, or the method that should be reported. The complete method
 library remains available as the manual/expert route.
 
-### Refuse to run the wrong test
+### Assumption checks
 
 Every test declares the assumptions it rests on. Those are checked against your
 actual data before anything runs, and shown as a row of lit indicators:
@@ -117,12 +116,12 @@ On a failure the tool names the test that does not need that assumption, and
 one setting decides whether it warns, blocks and offers the fallback, or
 switches automatically. The violation is recorded either way.
 
-Some of the calibration matters: Shapiro-Wilk is downgraded to a caution above
+Shapiro-Wilk is downgraded to a caution above
 n = 5000, because at that size it rejects departures too small to matter.
 Independence is stated rather than silently assumed, because no data frame can
 test it and it is the assumption most often violated in the literature.
 
-### Draw publication figures
+### Figures
 
 Figures are built from a result rather than from raw data, so the significance
 annotation cannot disagree with the statistics that produced it.
@@ -137,7 +136,7 @@ dpi, vector PDF, SVG and EPS with fonts embedded, Okabe-Ito and viridis
 palettes, and a greyscale check. Error bars always print which kind they are,
 because SD, SEM and 95% CI look alike and mean different things.
 
-### Report it
+### Reporting
 
 The methods paragraph is generated from the ledger: the tests actually
 executed, the corrections applied, how many assumption checks ran and how many
@@ -155,17 +154,17 @@ Python/R snippets for supported methods. The immutable run JSON is the
 canonical record of what LabDesk executed; emitted snippets may require the
 corresponding data-preparation variables before they can be run independently.
 
-### Tell you when you have run too many tests
+### Multiplicity audit
 
 Because every run is recorded, the tool knows how many tests have been run
 against a dataset and what that does to your alpha. After ten it starts saying
 so. The multiplicity audit shows the family-wise error rate implied by the
 count.
 
-This exists to be uncomfortable. Running one more test has never been cheaper,
-and the ledger is the only honest way to keep alpha meaning something.
+Running another test costs almost nothing, and without a count of how many
+were run, the reported alpha means little.
 
-### Explain itself
+### Handbook
 
 A built-in handbook, seventeen articles across five sections, covering the
 review workflow in the order the steps belong in, and the statistics: choosing
@@ -210,15 +209,15 @@ limit from 3 to 10 requests per second.
 
 ---
 
-## How it is built
+## Architecture
 
 The browser never sends a command, a query or a line of code. It sends a
-**specification**: the id of a registry entry, plus values for the fields that
+specification: the id of a registry entry, plus values for the fields that
 entry declares. The server validates that specification against the same
 definitions the interface was generated from, then compiles and runs it.
 
-Which means the entire option surface exists in exactly one place. Adding a
-test is one dictionary and one function:
+So every option is defined in one place, and adding a
+test takes one dictionary and one function:
 
 ```python
 T("ancova", "ANCOVA", "Three or more groups",
@@ -283,27 +282,27 @@ labdesk/
 
 ---
 
-## Deliberate choices
+## Design choices
 
-**Error bars are always labeled in the figure.** SEM bars are the shortest and
+Error bars are always labeled in the figure. SEM bars are the shortest and
 the most popular, and they mean something different from SD.
 
-**Kaplan-Meier y axes start at zero** by default, because truncating them
+Kaplan-Meier y axes start at zero by default, because truncating them
 exaggerates separation.
 
-**Predictive values carry a prevalence caveat**, because they are properties of
+Predictive values carry a prevalence caveat, because they are properties of
 a test in a population, not properties of a test.
 
-**Observed power is available but discouraged**, with the reason attached: it
+Observed power is available but discouraged, with the reason attached: it
 is a deterministic function of the p value and adds nothing.
 
-**Table 1 offers standardized mean differences**, because baseline p values in
+Table 1 offers standardized mean differences, because baseline p values in
 a randomized trial test a hypothesis you already know is true.
 
-**Every run is logged, including blocked ones.** You cannot quietly try eight
-tests and report the ninth.
+Every run is logged, including blocked ones, so trying eight tests and
+reporting the ninth leaves a record.
 
-**Deleting is easy and never silent.** Rows, filtered subsets and whole
+Deleting is easy and never silent. Rows, filtered subsets and whole
 categories can all be cleared, but each says what it will remove and what will
 survive first. Removing a dataset asks whether the analyses go with it and
 defaults to keeping them, because the data going away should not erase the
