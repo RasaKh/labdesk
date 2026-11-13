@@ -53,7 +53,7 @@ They meet at **Synthesis**, where extracted arm-level numbers become effect
 sizes and standard errors, and those go straight into the meta-analysis in the
 Statistics pane like any other data.
 
-## What holds it together
+## The run ledger
 
 Underneath both sits the **run ledger**. Every analysis writes one row: a hash
 of the data, the exact specification, the random seed, the package versions,
@@ -101,7 +101,7 @@ empty, `NA`, `.`, `999`, or a dozen other conventions; they are all recognised.
 
 ## 2. Fix the dictionary
 
-This is the step people skip, and it is the one that quietly ruins results.
+People often skip this step, and skipping it ruins results without any visible error.
 
 Each column gets an inferred type: continuous, ordinal, categorical, binary,
 time, or id. That type decides which tests will accept the variable. The
@@ -208,7 +208,7 @@ should be done with the same criteria you wrote in the protocol, not by feel.
 ## 4. Screen titles and abstracts
 
 [Screening](#pane:screen). Keyboard-driven: `i` include, `e` exclude, `m`
-maybe, `s` skip, `u` undo. Undo genuinely deletes the judgement.
+maybe, `s` skip, `u` undo. Undo deletes the judgment.
 
 Screen liberally at this stage. The cost of wrongly including something is one
 full text to read. The cost of wrongly excluding it is a missing study nobody
@@ -324,7 +324,7 @@ Databases are not enough on their own.
 - **Forward citation chasing** who has cited your included studies since.
   OpenAlex and Europe PMC both give citation counts and links
 
-## Then check what you found is real
+## Check for retractions
 
 Run the **retraction check** in the corpus panel. It queries Crossref, which
 carries the Retraction Watch data, and flags retractions and expressions of
@@ -383,7 +383,7 @@ and how disagreements were resolved. All four are PRISMA items.
 
 ## A note on effort
 
-Full dual screening of a 4000-record corpus is genuinely expensive. Accepted
+Full dual screening of a 4000-record corpus is expensive. Accepted
 compromises, in descending order of rigour:
 
 1. Both reviewers screen everything, independently
@@ -401,7 +401,7 @@ E("rob", "Risk of bias, and what to do with it", "Doing a review",
 Risk of bias is about the **study**, not the paper. A beautifully written paper
 can report a badly randomised trial. Judge what was done.
 
-## Pick the right instrument
+## Choosing the instrument
 
 | Design | Instrument | Judgements |
 |---|---|---|
@@ -422,7 +422,7 @@ ROBINS-I takes the worst domain. It is not an average and it is not a vibe.
 Write the rationale even when it is "not reported", because "not reported" is
 itself the finding and reviewers will ask.
 
-## Then actually use it
+## Using the assessment
 
 Assessing risk of bias and then ignoring it is the most common thing reviews
 do with it. Options, in rough order of preference:
@@ -667,7 +667,7 @@ In Settings, **when an assumption fails** has three options:
 Blocking is the honest default when working alone. Automatic is faster, but you
 must read the note it leaves, because it changes what your result means.
 
-## What each failure actually means
+## What each failure means
 
 **Normality.** Shapiro-Wilk is downgraded to a caution above n = 5000, because
 at that size it rejects departures too small to matter. Read the Q-Q plot
@@ -1027,8 +1027,8 @@ E("reproducibility", "Reproducibility and the ledger", "Producing the output",
 - Every **assumption check** and what it said
 - The **result**, and the wall-clock duration
 
-Blocked runs are recorded too. You cannot quietly try eight tests and report
-the ninth.
+Blocked runs are recorded too, so trying eight tests and reporting the ninth
+leaves a record.
 
 ## The methods paragraph
 
